@@ -1,5 +1,7 @@
 package com.nuvio.app.features.downloads
 
+import com.nuvio.app.core.build.AppFeaturePolicy
+import com.nuvio.app.features.p2p.normalizeP2pInfoHashOrNull
 import com.nuvio.app.features.player.SubtitleRequestExtras
 import com.nuvio.app.features.player.addonSubtitleRequests
 import com.nuvio.app.features.streams.StreamItem
@@ -127,16 +129,30 @@ object DownloadsRepository {
     ): DownloadEnqueueResult {
         ensureLoaded()
 
-        val sourceUrl = stream.playableDirectUrl
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: return DownloadEnqueueResult.MissingUrl
-
-        if (!sourceUrl.isSupportedDownloadUrl()) {
-            return DownloadEnqueueResult.UnsupportedFormat
+        val now = DownloadsClock.nowEpochMs()
+        val downloadId = nextDownloadId(now)
+        val built = buildDownloadItemFromStream(
+            downloadId = downloadId,
+            nowEpochMs = now,
+            contentType = contentType,
+            videoId = videoId,
+            parentMetaId = parentMetaId,
+            parentMetaType = parentMetaType,
+            title = title,
+            logo = logo,
+            poster = poster,
+            background = background,
+            seasonNumber = seasonNumber,
+            episodeNumber = episodeNumber,
+            episodeTitle = episodeTitle,
+            episodeThumbnail = episodeThumbnail,
+            stream = stream,
+        )
+        val item = when (built) {
+            is StreamDownloadBuildResult.Failure -> return built.result
+            is StreamDownloadBuildResult.Success -> built.item
         }
 
-        val now = DownloadsClock.nowEpochMs()
         val logicalKey = buildLogicalKey(
             parentMetaId = parentMetaId,
             seasonNumber = seasonNumber,
@@ -153,54 +169,6 @@ object DownloadsRepository {
             DownloadsPlatformDownloader.removePartialFile(existing.fileName)
             currentItems.removeAll { it.id == existing.id }
         }
-
-        val downloadId = nextDownloadId(now)
-        val fileName = buildFileName(
-            title = title,
-            seasonNumber = seasonNumber,
-            episodeNumber = episodeNumber,
-            episodeTitle = episodeTitle,
-            fallbackTitle = stream.streamLabel,
-            sourceUrl = sourceUrl,
-            downloadId = downloadId,
-        )
-
-        val item = DownloadItem(
-            id = downloadId,
-            contentType = contentType,
-            parentMetaId = parentMetaId,
-            parentMetaType = parentMetaType,
-            videoId = videoId,
-            title = title,
-            logo = logo,
-            poster = poster,
-            background = background,
-            seasonNumber = seasonNumber,
-            episodeNumber = episodeNumber,
-            episodeTitle = episodeTitle,
-            episodeThumbnail = episodeThumbnail,
-            streamTitle = stream.streamLabel,
-            streamSubtitle = stream.streamSubtitle,
-            providerName = stream.addonName,
-            providerAddonId = stream.addonId,
-            sourceUrl = sourceUrl,
-            sourceHeaders = sanitizeRequestHeaders(stream.behaviorHints.proxyHeaders?.request),
-            sourceResponseHeaders = sanitizeResponseHeaders(stream.behaviorHints.proxyHeaders?.response),
-            subtitleRequests = addonSubtitleRequests(
-                type = contentType,
-                videoId = videoId,
-                extras = SubtitleRequestExtras.from(stream.behaviorHints, sourceUrl),
-            ),
-            sourceSubtitles = stream.externalSubtitles,
-            localFileUri = null,
-            fileName = fileName,
-            status = DownloadStatus.Downloading,
-            downloadedBytes = 0L,
-            totalBytes = null,
-            errorMessage = null,
-            createdAtEpochMs = now,
-            updatedAtEpochMs = now,
-        )
 
         currentItems.add(0, item)
         publish(currentItems)
@@ -518,12 +486,143 @@ private fun buildLogicalKey(
     "${parentMetaId.trim()}|movie"
 }
 
+internal sealed interface StreamDownloadBuildResult {
+    data class Success(val item: DownloadItem) : StreamDownloadBuildResult
+    data class Failure(val result: DownloadEnqueueResult) : StreamDownloadBuildResult
+}
+
+internal fun buildDownloadItemFromStream(
+    downloadId: String,
+    nowEpochMs: Long,
+    contentType: String,
+    videoId: String,
+    parentMetaId: String,
+    parentMetaType: String,
+    title: String,
+    logo: String?,
+    poster: String?,
+    background: String?,
+    seasonNumber: Int?,
+    episodeNumber: Int?,
+    episodeTitle: String?,
+    episodeThumbnail: String?,
+    stream: StreamItem,
+    p2pFeatureEnabled: Boolean = AppFeaturePolicy.p2pEnabled,
+    platformSupportsTorrentDownloads: Boolean = DownloadsPlatformDownloader.supportsTorrentDownloads,
+): StreamDownloadBuildResult {
+    val directUrl = stream.playableDirectUrl
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+
+    val torrentInfoHash: String?
+    val torrentFileIdx: Int?
+    val torrentFilename: String?
+    val torrentTrackers: List<String>
+    val sourceUrl: String
+    val initialTotalBytes: Long?
+
+    if (directUrl != null) {
+        if (!directUrl.isSupportedDownloadUrl()) {
+            return StreamDownloadBuildResult.Failure(DownloadEnqueueResult.UnsupportedFormat)
+        }
+        torrentInfoHash = null
+        torrentFileIdx = null
+        torrentFilename = null
+        torrentTrackers = emptyList()
+        sourceUrl = directUrl
+        initialTotalBytes = null
+    } else if (stream.needsLocalDebridResolve && stream.p2pInfoHash != null) {
+        if (!p2pFeatureEnabled || !platformSupportsTorrentDownloads) {
+            return StreamDownloadBuildResult.Failure(DownloadEnqueueResult.UnsupportedFormat)
+        }
+        val canonicalHash = normalizeP2pInfoHashOrNull(stream.p2pInfoHash)
+            ?: return StreamDownloadBuildResult.Failure(DownloadEnqueueResult.UnsupportedFormat)
+        torrentInfoHash = canonicalHash
+        torrentFileIdx = stream.p2pFileIdx
+        torrentFilename = stream.p2pPreferredFilename
+        torrentTrackers = stream.p2pTrackers
+        sourceUrl = buildTorrentSentinelUrl(canonicalHash, torrentFileIdx)
+        initialTotalBytes = stream.behaviorHints.videoSize?.takeIf { it > 0L }
+    } else {
+        return StreamDownloadBuildResult.Failure(
+            if (stream.directPlaybackUrl != null || stream.externalUrl != null || stream.isTorrentStream) {
+                DownloadEnqueueResult.UnsupportedFormat
+            } else {
+                DownloadEnqueueResult.MissingUrl
+            },
+        )
+    }
+
+    val fileName = buildFileName(
+        title = title,
+        seasonNumber = seasonNumber,
+        episodeNumber = episodeNumber,
+        episodeTitle = episodeTitle,
+        fallbackTitle = stream.streamLabel,
+        preferredFilename = torrentFilename,
+        sourceUrl = directUrl ?: sourceUrl,
+        downloadId = downloadId,
+    )
+    val subtitleHints = if (torrentFilename != null && stream.behaviorHints.filename.isNullOrBlank()) {
+        stream.behaviorHints.copy(filename = torrentFilename)
+    } else {
+        stream.behaviorHints
+    }
+
+    return StreamDownloadBuildResult.Success(
+        DownloadItem(
+            id = downloadId,
+            contentType = contentType,
+            parentMetaId = parentMetaId,
+            parentMetaType = parentMetaType,
+            videoId = videoId,
+            title = title,
+            logo = logo,
+            poster = poster,
+            background = background,
+            seasonNumber = seasonNumber,
+            episodeNumber = episodeNumber,
+            episodeTitle = episodeTitle,
+            episodeThumbnail = episodeThumbnail,
+            streamTitle = stream.streamLabel,
+            streamSubtitle = stream.streamSubtitle,
+            providerName = stream.addonName,
+            providerAddonId = stream.addonId,
+            sourceUrl = sourceUrl,
+            sourceHeaders = sanitizeRequestHeaders(stream.behaviorHints.proxyHeaders?.request),
+            sourceResponseHeaders = sanitizeResponseHeaders(stream.behaviorHints.proxyHeaders?.response),
+            subtitleRequests = addonSubtitleRequests(
+                type = contentType,
+                videoId = videoId,
+                extras = SubtitleRequestExtras.from(subtitleHints, directUrl),
+            ),
+            sourceSubtitles = stream.externalSubtitles,
+            torrentInfoHash = torrentInfoHash,
+            torrentFileIdx = torrentFileIdx,
+            torrentFilename = torrentFilename,
+            torrentTrackers = torrentTrackers,
+            localFileUri = null,
+            fileName = fileName,
+            status = DownloadStatus.Downloading,
+            downloadedBytes = 0L,
+            totalBytes = initialTotalBytes,
+            errorMessage = null,
+            createdAtEpochMs = nowEpochMs,
+            updatedAtEpochMs = nowEpochMs,
+        ),
+    )
+}
+
+private fun buildTorrentSentinelUrl(infoHash: String, fileIdx: Int?): String =
+    "torrent://$infoHash${fileIdx?.let { "?index=$it" }.orEmpty()}"
+
 private fun buildFileName(
     title: String,
     seasonNumber: Int?,
     episodeNumber: Int?,
     episodeTitle: String?,
     fallbackTitle: String,
+    preferredFilename: String?,
     sourceUrl: String,
     downloadId: String,
 ): String {
@@ -543,7 +642,8 @@ private fun buildFileName(
         title.ifBlank { fallbackTitle }
     }
 
-    val extension = sourceUrl.fileExtensionFromUrl()
+    val extension = preferredFilename?.knownVideoExtensionOrNull()
+        ?: sourceUrl.fileExtensionFromUrl()
     return buildString {
         append(baseTitle.sanitizeFileName().ifBlank { "download" }.take(92))
         append('_')
@@ -551,6 +651,18 @@ private fun buildFileName(
         append('.')
         append(extension)
     }
+}
+
+private val knownVideoExtensions = setOf(
+    "mp4", "mkv", "avi", "mov", "webm", "m4v", "ts", "flv", "wmv", "mpg", "mpeg",
+)
+
+private fun String.knownVideoExtensionOrNull(): String? {
+    val withoutQuery = substringBefore('?').substringBefore('#')
+    val suffix = withoutQuery.substringAfterLast('.', missingDelimiterValue = "")
+        .lowercase()
+        .trim()
+    return suffix.takeIf { it in knownVideoExtensions }
 }
 
 private fun String.sanitizeFileName(): String =
@@ -569,7 +681,7 @@ private fun String.fileExtensionFromUrl(): String {
     }
 }
 
-private fun String.isSupportedDownloadUrl(): Boolean {
+internal fun String.isSupportedDownloadUrl(): Boolean {
     val normalized = trim().lowercase()
     if (normalized.startsWith("magnet:")) return false
     if (normalized.endsWith(".m3u8") || normalized.contains(".m3u8?")) return false

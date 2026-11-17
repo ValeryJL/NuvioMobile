@@ -157,14 +157,79 @@ data class P2pStreamRequest(
     val trackers: List<String> = emptyList(),
 )
 
-internal fun canonicalP2pInfoHash(infoHash: String): String {
-    val canonical = infoHash.trim().lowercase()
-    require((canonical.length == 40 || canonical.length == 64) &&
-        canonical.all { it in '0'..'9' || it in 'a'..'f' }) {
-        "Torrent info hash must be 40 or 64 hexadecimal characters"
+internal fun normalizeP2pInfoHashOrNull(infoHash: String?): String? {
+    val trimmed = infoHash?.trim().orEmpty()
+    if (trimmed.isEmpty()) return null
+    val canonical = trimmed.lowercase()
+    if ((canonical.length == 40 || canonical.length == 64) &&
+        canonical.all { it in '0'..'9' || it in 'a'..'f' }
+    ) {
+        return canonical
     }
-    return canonical
+    if (trimmed.length == 32) {
+        return decodeBase32ToHexOrNull(trimmed)
+    }
+    return null
 }
+
+internal fun canonicalP2pInfoHash(infoHash: String): String =
+    normalizeP2pInfoHashOrNull(infoHash)
+        ?: throw IllegalArgumentException(
+            "Torrent info hash must be 40 or 64 hexadecimal characters",
+        )
+
+private fun decodeBase32ToHexOrNull(value: String): String? {
+    if (value.length != 32) return null
+    var buffer = 0
+    var bitsLeft = 0
+    val bytes = ByteArray(20)
+    var index = 0
+    for (ch in value) {
+        val decoded = when (ch) {
+            in 'A'..'Z' -> ch - 'A'
+            in 'a'..'z' -> ch - 'a'
+            in '2'..'7' -> ch - '2' + 26
+            else -> return null
+        }
+        buffer = (buffer shl 5) or decoded
+        bitsLeft += 5
+        if (bitsLeft >= 8) {
+            bitsLeft -= 8
+            bytes[index++] = ((buffer ushr bitsLeft) and 0xff).toByte()
+        }
+    }
+    if (index != 20 || bitsLeft != 0) return null
+    return buildString(40) {
+        for (byte in bytes) {
+            val unsigned = byte.toInt() and 0xff
+            append(HEX_DIGITS[unsigned ushr 4].lowercaseChar())
+            append(HEX_DIGITS[unsigned and 0x0f].lowercaseChar())
+        }
+    }
+}
+
+internal val DEFAULT_P2P_TRACKERS = listOf(
+    "udp://zer0day.ch:1337/announce",
+    "udp://tracker.publictracker.xyz:6969/announce",
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://open.stealth.si:80/announce",
+    "http://tracker.renfei.net:8080/announce",
+    "udp://udp.tracker.projectk.org:23333/announce",
+    "udp://tracker.tryhackx.org:6969/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://tracker.theoks.net:6969/announce",
+    "udp://tracker.startwork.cv:1337/announce",
+    "udp://tracker.qu.ax:6969/announce",
+    "udp://tracker.plx.im:6969/announce",
+    "udp://tracker.nyaa.vc:6969/announce",
+    "udp://tracker.iperson.xyz:6969/announce",
+    "udp://tracker.gmi.gd:6969/announce",
+    "udp://tracker.fnix.net:6969/announce",
+    "udp://tracker.flatuslifir.is:6969/announce",
+    "udp://tracker.ducks.party:1984/announce",
+    "udp://tracker.bluefrog.pw:2710/announce",
+)
 
 internal fun buildP2pMagnetUri(infoHash: String, trackers: List<String>): String {
     val canonicalHash = canonicalP2pInfoHash(infoHash)

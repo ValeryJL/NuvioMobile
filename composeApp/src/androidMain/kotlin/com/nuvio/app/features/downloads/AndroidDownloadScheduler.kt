@@ -17,6 +17,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import com.nuvio.app.core.build.AppFeaturePolicy
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
@@ -34,7 +35,10 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.ConnectionPool
 
-internal class AndroidDownloadScheduler(val context: Context) {
+internal class AndroidDownloadScheduler(
+    val context: Context,
+    private val torrentProvider: TorrentSessionProvider = NuvioEngineTorrentSessionProvider(context.applicationContext),
+) {
     val store = AndroidDownloadStore(File(context.filesDir, "download-transfers"))
     val directory = File(context.filesDir, "downloads")
     private val locks = ConcurrentHashMap<String, Mutex>()
@@ -117,6 +121,7 @@ internal class AndroidDownloadScheduler(val context: Context) {
 
     fun remove(fileName: String) {
         val transfer = store.get(fileName)
+        val torrentInfoHash = transfer?.item?.torrentInfoHash
         store.remove(fileName)
         transfer?.let(::cancelScheduled)
         transfer?.let { DownloadsLiveStatusPlatform.removeNotification(it.item.id) }
@@ -125,6 +130,10 @@ internal class AndroidDownloadScheduler(val context: Context) {
                 if (store.get(fileName) == null) {
                     File(directory, "$fileName.part").delete()
                     DownloadSubtitleStorage(File(directory, fileName).toURI().toString()).remove()
+                    if (!torrentInfoHash.isNullOrBlank() &&
+                        store.transfers.value.values.none { it.item.torrentInfoHash == torrentInfoHash }) {
+                        torrentProvider.cleanupTorrentArtifacts(torrentInfoHash)
+                    }
                 }
             }
         }
@@ -143,36 +152,62 @@ internal class AndroidDownloadScheduler(val context: Context) {
         val fileName = transfer.item.fileName
         if (!isActive(transfer)) return@withLock false
         val destination = File(directory, fileName)
-        val client = if (network != null) {
+        val initialPartialBytes = File(directory, "$fileName.part").takeIf(File::isFile)?.length() ?: 0L
+        val isTorrent = transfer.item.isTorrentDownload
+        val client = if (network != null && !isTorrent) {
             downloadHttpClient.newBuilder()
                 .socketFactory(network.socketFactory)
                 .dns { network.getAllByName(it).toList() }
                 .connectionPool(ConnectionPool())
                 .build()
-        } else downloadHttpClient
+        } else if (isTorrent) {
+            torrentLoopbackHttpClient
+        } else {
+            downloadHttpClient
+        }
         try {
+            if (isTorrent && (!AppFeaturePolicy.p2pEnabled || !DownloadsPlatformDownloader.supportsTorrentDownloads)) {
+                throw IllegalStateException("Torrent downloads are not supported on this build")
+            }
             DownloadSubtitles.prepare(transfer.item, destination.toURI().toString())
             currentCoroutineContext().ensureActive()
             if (!isActive(transfer)) return@withLock false
             var lastProgressAt = 0L
-            val partial = if (destination.isFile) destination else transferAndroidDownload(
-                item = transfer.item,
-                directory = directory,
-                validator = transfer.validator,
-                client = client,
-                onHeaders = { total, validator ->
-                    updateActive(transfer) { it.copy(validator = validator, item = it.item.copy(totalBytes = total)) }
-                },
-                onProgress = { bytes, total ->
-                    val now = SystemClock.elapsedRealtime()
-                    if (now - lastProgressAt >= 1_000L || bytes == total) {
-                        lastProgressAt = now
-                        updateActive(transfer) {
-                            it.copy(item = it.item.copy(downloadedBytes = bytes, totalBytes = total))
-                        }?.let(onProgress)
-                    }
-                },
-            )
+            val onHeadersCallback: (Long?, String?) -> Unit = { total, validator ->
+                updateActive(transfer) { it.copy(validator = validator, item = it.item.copy(totalBytes = total)) }
+            }
+            val onProgressCallback: (Long, Long?) -> Unit = { bytes, total ->
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastProgressAt >= 1_000L || bytes == total) {
+                    lastProgressAt = now
+                    updateActive(transfer) {
+                        val updatedRetryCount = if (bytes > initialPartialBytes) 0 else it.retryCount
+                        it.copy(
+                            retryCount = updatedRetryCount,
+                            item = it.item.copy(downloadedBytes = bytes, totalBytes = total),
+                        )
+                    }?.let(onProgress)
+                }
+            }
+            val partial = when {
+                destination.isFile -> destination
+                isTorrent -> transferTorrentDownload(
+                    item = transfer.item,
+                    directory = directory,
+                    sessionProvider = torrentProvider,
+                    client = client,
+                    onHeaders = onHeadersCallback,
+                    onProgress = onProgressCallback,
+                )
+                else -> transferAndroidDownload(
+                    item = transfer.item,
+                    directory = directory,
+                    validator = transfer.validator,
+                    client = client,
+                    onHeaders = onHeadersCallback,
+                    onProgress = onProgressCallback,
+                )
+            }
             currentCoroutineContext().ensureActive()
             updateActive(transfer) { current ->
                 if (partial != destination && !partial.renameTo(destination)) {
@@ -193,12 +228,19 @@ internal class AndroidDownloadScheduler(val context: Context) {
         } catch (error: Exception) {
             currentCoroutineContext().ensureActive()
             if (!isActive(transfer)) return@withLock false
-            val retry = shouldRetryAndroidDownload(error, transfer.retryCount)
-            if (retry) updateActive(transfer) { it.copy(retryCount = it.retryCount + 1) }
-            else fail(transfer, error)
+            val currentPartialBytes = File(directory, "$fileName.part").takeIf(File::isFile)?.length() ?: 0L
+            val currentTransfer = store.get(fileName)?.takeIf { it.generation == transfer.generation } ?: transfer
+            val effectiveRetryCount = if (currentPartialBytes > initialPartialBytes) 0 else currentTransfer.retryCount
+            val retry = shouldRetryAndroidDownload(error, effectiveRetryCount)
+            if (retry) updateActive(transfer) {
+                it.copy(
+                    retryCount = effectiveRetryCount + 1,
+                    item = it.item.copy(downloadedBytes = currentPartialBytes.coerceAtLeast(it.item.downloadedBytes)),
+                )
+            } else fail(transfer, error)
             retry
         } finally {
-            if (network != null) withContext(NonCancellable + Dispatchers.IO) { client.connectionPool.evictAll() }
+            if (network != null && !isTorrent) withContext(NonCancellable + Dispatchers.IO) { client.connectionPool.evictAll() }
         }
     }
 

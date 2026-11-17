@@ -3,6 +3,7 @@ package com.nuvio.app.features.p2p
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class P2pMagnetTest {
@@ -18,6 +19,15 @@ class P2pMagnetTest {
     }
 
     @Test
+    fun base32HashIsDecodedTo40HexForCanonicalMagnet() {
+        val base32Hash = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+        val expectedHex = "00443214c74254b635cf84653a56d7c675be77df"
+
+        assertEquals(expectedHex, normalizeP2pInfoHashOrNull(base32Hash))
+        assertTrue(buildP2pMagnetUri(base32Hash, emptyList()).startsWith("magnet:?xt=urn:btih:$expectedHex"))
+    }
+
+    @Test
     fun v2HashUsesMultihashTopic() {
         val hash = "a".repeat(64)
         assertTrue(buildP2pMagnetUri(hash, emptyList()).contains("xt=urn:btmh:1220$hash"))
@@ -25,6 +35,7 @@ class P2pMagnetTest {
 
     @Test
     fun invalidHashIsRejectedBeforeNativeWork() {
+        assertNull(normalizeP2pInfoHashOrNull("not-a-hash"))
         assertFailsWith<IllegalArgumentException> {
             buildP2pMagnetUri("not-a-hash", emptyList())
         }

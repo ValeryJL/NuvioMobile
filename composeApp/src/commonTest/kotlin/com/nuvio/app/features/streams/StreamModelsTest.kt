@@ -307,6 +307,42 @@ class StreamModelsTest {
         assertTrue(stream.isSelectableForPlayback(debridEnabled = false))
     }
 
+    @Test
+    fun `p2pTrackers extracts decoded trackers from sources and magnet tr query params`() {
+        val stream = stream(
+            url = "magnet:?xt=urn:btih:$hexHash&tr=udp%3A%2F%2Ftracker.one%3A6969%2Fannounce&tr=https%3A%2F%2Ftracker.two%2Fannounce",
+            sources = listOf("tracker:udp://tracker.one:6969/announce", "tracker:udp://tracker.three:80/announce"),
+        )
+        assertEquals(
+            listOf(
+                "udp://tracker.one:6969/announce",
+                "udp://tracker.three:80/announce",
+                "https://tracker.two/announce",
+            ),
+            stream.p2pTrackers,
+        )
+    }
+
+    @Test
+    fun `isSupportedTorrentDownload and isSupportedDownload respect policy and platform flags`() {
+        val torrent = stream(
+            infoHash = hexHash,
+            fileIdx = 2,
+            behaviorHints = StreamBehaviorHints(filename = "Show.S01E02.mkv"),
+        )
+        val m3u8 = stream(url = "https://cdn.example.com/playlist.m3u8")
+        val directMp4 = stream(url = "https://cdn.example.com/video.mp4")
+
+        assertEquals("Show.S01E02.mkv", torrent.p2pPreferredFilename)
+        assertTrue(torrent.isSupportedTorrentDownload(p2pFeatureEnabled = true, platformSupportsTorrentDownloads = true))
+        assertFalse(torrent.isSupportedTorrentDownload(p2pFeatureEnabled = false, platformSupportsTorrentDownloads = true))
+        assertFalse(torrent.isSupportedTorrentDownload(p2pFeatureEnabled = true, platformSupportsTorrentDownloads = false))
+        assertTrue(torrent.isSupportedDownload(debridEnabled = false, p2pFeatureEnabled = true, platformSupportsTorrentDownloads = true))
+        assertFalse(torrent.isSupportedDownload(debridEnabled = false, p2pFeatureEnabled = false, platformSupportsTorrentDownloads = true))
+        assertFalse(m3u8.isSupportedDownload(debridEnabled = false, p2pFeatureEnabled = true, platformSupportsTorrentDownloads = true))
+        assertTrue(directMp4.isSupportedDownload(debridEnabled = false, p2pFeatureEnabled = false, platformSupportsTorrentDownloads = false))
+    }
+
     // -----------------------------------------------------------------------
     // Helper
     // -----------------------------------------------------------------------
@@ -316,11 +352,15 @@ class StreamModelsTest {
         infoHash: String? = null,
         fileIdx: Int? = null,
         externalUrl: String? = null,
+        sources: List<String> = emptyList(),
+        behaviorHints: StreamBehaviorHints = StreamBehaviorHints(),
     ): StreamItem = StreamItem(
         url = url,
         infoHash = infoHash,
         fileIdx = fileIdx,
         externalUrl = externalUrl,
+        sources = sources,
+        behaviorHints = behaviorHints,
         addonName = "TestAddon",
         addonId = "test.addon",
     )

@@ -1,6 +1,9 @@
 package com.nuvio.app.features.streams
 
 import com.nuvio.app.core.build.AppFeaturePolicy
+import com.nuvio.app.features.downloads.DownloadsPlatformDownloader
+import com.nuvio.app.features.downloads.isSupportedDownloadUrl
+import com.nuvio.app.features.p2p.normalizeP2pInfoHashOrNull
 import com.nuvio.app.features.servers.ServerPlaybackTarget
 import kotlinx.serialization.Serializable
 
@@ -113,19 +116,31 @@ data class StreamItem(
         get() = infoHash.normalizedInfoHash()
             ?: clientResolve?.infoHash.normalizedInfoHash()
             ?: torrentMagnetUri.extractBtihInfoHash()
+            ?: clientResolve?.magnetUri.extractBtihInfoHash()
             ?: torrentSchemeUri.extractTorrentSchemeInfoHash()
 
     val p2pFileIdx: Int?
-        get() = fileIdx ?: torrentSchemeUri.extractTorrentSchemeFileIdx()
+        get() = fileIdx
+            ?: clientResolve?.fileIdx
+            ?: torrentSchemeUri.extractTorrentSchemeFileIdx()
 
     val p2pTrackers: List<String>
-        get() = sources
-            .asSequence()
-            .filter { it.startsWith("tracker:") }
-            .map { it.removePrefix("tracker:").trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
-            .toList()
+        get() = buildList {
+            (sources.asSequence() + clientResolve?.sources.orEmpty().asSequence())
+                .filter { it.startsWith("tracker:") }
+                .map { it.removePrefix("tracker:").trim() }
+                .filterTo(this) { it.isNotEmpty() }
+            listOfNotNull(torrentMagnetUri, clientResolve?.magnetUri)
+                .flatMapTo(this) { it.extractMagnetTrackers() }
+        }.distinct()
+
+    val p2pPreferredFilename: String?
+        get() = behaviorHints.filename
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: clientResolve?.filename
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
 
     val isAddonDebridCandidate: Boolean
         get() = isInstalledAddonStream && (needsLocalDebridResolve || isDirectDebridStream)
@@ -197,6 +212,53 @@ private fun String?.extractBtihInfoHash(): String? {
         .takeIf { it.isNotEmpty() }
 }
 
+private fun String.extractMagnetTrackers(): List<String> {
+    val query = substringAfter('?', missingDelimiterValue = "")
+    if (query.isBlank()) return emptyList()
+    return query.split('&')
+        .asSequence()
+        .filter { it.startsWith("tr=", ignoreCase = true) }
+        .mapNotNull { param ->
+            param.substring(3)
+                .decodePercentEncoded()
+                .trim()
+                .takeIf { it.isNotEmpty() }
+        }
+        .toList()
+}
+
+private fun String.decodePercentEncoded(): String {
+    if ('%' !in this) return this
+    val result = StringBuilder(length)
+    var i = 0
+    while (i < length) {
+        if (this[i] == '%') {
+            val bytes = ArrayList<Byte>()
+            while (i + 2 < length && this[i] == '%') {
+                val high = this[i + 1].hexDigitValueOrNull()
+                val low = this[i + 2].hexDigitValueOrNull()
+                if (high == null || low == null) break
+                bytes.add(((high shl 4) or low).toByte())
+                i += 3
+            }
+            if (bytes.isNotEmpty()) {
+                result.append(bytes.toByteArray().decodeToString())
+                continue
+            }
+        }
+        result.append(this[i])
+        i += 1
+    }
+    return result.toString()
+}
+
+private fun Char.hexDigitValueOrNull(): Int? = when (this) {
+    in '0'..'9' -> this - '0'
+    in 'a'..'f' -> 10 + (this - 'a')
+    in 'A'..'F' -> 10 + (this - 'A')
+    else -> null
+}
+
 fun StreamItem.isSelectableForPlayback(debridEnabled: Boolean): Boolean =
     playableDirectUrl != null ||
         serverTarget != null ||
@@ -204,6 +266,27 @@ fun StreamItem.isSelectableForPlayback(debridEnabled: Boolean): Boolean =
         youTubeIdToResolve != null ||
         (AppFeaturePolicy.p2pEnabled && needsLocalDebridResolve && p2pInfoHash != null) ||
         (debridEnabled && isAddonDebridCandidate)
+
+internal fun StreamItem.isSupportedTorrentDownload(
+    p2pFeatureEnabled: Boolean = AppFeaturePolicy.p2pEnabled,
+    platformSupportsTorrentDownloads: Boolean = DownloadsPlatformDownloader.supportsTorrentDownloads,
+): Boolean =
+    p2pFeatureEnabled &&
+        platformSupportsTorrentDownloads &&
+        needsLocalDebridResolve &&
+        normalizeP2pInfoHashOrNull(p2pInfoHash) != null
+
+internal fun StreamItem.isSupportedDownload(
+    debridEnabled: Boolean,
+    p2pFeatureEnabled: Boolean = AppFeaturePolicy.p2pEnabled,
+    platformSupportsTorrentDownloads: Boolean = DownloadsPlatformDownloader.supportsTorrentDownloads,
+): Boolean =
+    playableDirectUrl?.isSupportedDownloadUrl() == true ||
+        (debridEnabled && isAddonDebridCandidate) ||
+        isSupportedTorrentDownload(
+            p2pFeatureEnabled = p2pFeatureEnabled,
+            platformSupportsTorrentDownloads = platformSupportsTorrentDownloads,
+        )
 
 data class StreamBehaviorHints(
     val bingeGroup: String? = null,

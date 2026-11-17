@@ -15,6 +15,9 @@ import java.io.File
 import java.net.URI
 
 internal actual object DownloadsPlatformDownloader {
+    actual val supportsTorrentDownloads: Boolean
+        get() = com.nuvio.app.core.build.AppFeaturePolicy.p2pEnabled
+
     private var appContext: Context? = null
     private var downloadScheduler: AndroidDownloadScheduler? = null
     private val observerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)

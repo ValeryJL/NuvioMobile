@@ -43,6 +43,10 @@ data class DownloadItem(
     val sourceResponseHeaders: Map<String, String> = emptyMap(),
     val subtitleRequests: List<SubtitleAddonRequest> = emptyList(),
     val sourceSubtitles: List<StreamSubtitle> = emptyList(),
+    val torrentInfoHash: String? = null,
+    val torrentFileIdx: Int? = null,
+    val torrentFilename: String? = null,
+    val torrentTrackers: List<String> = emptyList(),
     val localFileUri: String? = null,
     val fileName: String,
     val status: DownloadStatus,
@@ -54,6 +58,9 @@ data class DownloadItem(
 ) {
     val isEpisode: Boolean
         get() = seasonNumber != null && episodeNumber != null
+
+    val isTorrentDownload: Boolean
+        get() = !torrentInfoHash.isNullOrBlank()
 
     val isPlayable: Boolean
         get() = status == DownloadStatus.Completed && !localFileUri.isNullOrBlank()
