@@ -444,7 +444,7 @@ private fun PlayerScreenRuntime.RenderPlayerControls(
             chapters = chapters,
             onChaptersClick = if (chapters.isNotEmpty()) { { openChaptersPanel() } } else null,
             onOpenInExternalPlayer = run {
-                val resolvedExternalUrl = (if (isP2pPlaybackActive) p2pResolvedSourceUrl else activeSourceUrl)
+                val resolvedExternalUrl = (if (activeTorrentInfoHash != null) p2pResolvedSourceUrl else activeSourceUrl)
                     ?.takeIf { it.isNotBlank() }
                 val openExternal = args.onOpenInExternalPlayer
                 if (openExternal == null || ServerStreams.isServerSourceId(activeProviderAddonId) || resolvedExternalUrl == null) {
