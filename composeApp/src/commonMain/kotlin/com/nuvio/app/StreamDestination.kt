@@ -25,6 +25,8 @@ import com.nuvio.app.features.debrid.toastMessage
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.p2p.P2pConsentDialog
 import com.nuvio.app.features.p2p.P2pSettingsRepository
+import com.nuvio.app.features.p2p.P2pStreamRequest
+import com.nuvio.app.features.p2p.P2pStreamingEngine
 import com.nuvio.app.features.player.PlayerLaunch
 import com.nuvio.app.features.player.PlayerLaunchStore
 import com.nuvio.app.features.player.PlayerSettingsRepository
@@ -93,6 +95,7 @@ internal fun StreamDestination(
     var resolvingDebridStream by rememberSaveable(route.launchId) { mutableStateOf(false) }
     var resolvingYouTubeStream by rememberSaveable(route.launchId) { mutableStateOf(false) }
     var preparingServerStream by remember(route.launchId) { mutableStateOf(false) }
+    var resolvingP2pExternalStream by remember(route.launchId) { mutableStateOf(false) }
     var pendingP2pStreamOpen by remember { mutableStateOf<PendingP2pStreamOpen?>(null) }
     val shouldResolveEpisodeVideoId =
         launch.parentMetaId != null &&
@@ -182,6 +185,7 @@ internal fun StreamDestination(
         resolvedResumePositionMs: Long?,
         resolvedResumeProgressFraction: Float?,
         replaceStreamRoute: Boolean,
+        openExternally: Boolean,
     ) {
         val infoHash = stream.p2pInfoHash ?: return
         val sentinelUrl = p2pSentinelUrl(infoHash, stream.p2pFileIdx)
@@ -213,7 +217,7 @@ internal fun StreamDestination(
                 streamDescription = stream.streamSubtitle,
             )
         }
-        val playerLaunch = PlayerLaunch(
+        val basePlayerLaunch = PlayerLaunch(
             profileId = launch.profileId,
             title = launch.title,
             sourceUrl = sentinelUrl,
@@ -249,10 +253,64 @@ internal fun StreamDestination(
             stream = stream,
         )
 
+        if (openExternally) {
+            if (resolvingP2pExternalStream) return
+            streamRouteScope.launch {
+                resolvingP2pExternalStream = true
+                StreamsRepository.setOverlayVisible(true, getString(Res.string.player_torrent_starting_engine))
+                try {
+                    val localUrl = P2pStreamingEngine.startStream(
+                        P2pStreamRequest(
+                            infoHash = infoHash,
+                            fileIdx = stream.p2pFileIdx,
+                            filename = stream.behaviorHints.filename,
+                            trackers = stream.p2pTrackers,
+                        ),
+                    )
+                    val externalLaunch = basePlayerLaunch.copy(sourceUrl = localUrl)
+                    val opened = openExternalPlayback(externalLaunch)
+                    if (!opened) {
+                        P2pStreamingEngine.stopStream()
+                    }
+                    if (replaceStreamRoute) {
+                        StreamsRepository.consumeAutoPlay()
+                    }
+                    StreamsRepository.cancelLoading()
+                } catch (error: CancellationException) {
+                    StreamsRepository.setOverlayVisible(false)
+                    throw error
+                } catch (error: Exception) {
+                    StreamsRepository.setOverlayVisible(false)
+                    P2pStreamingEngine.stopStream()
+                    if (replaceStreamRoute) {
+                        val hasNext = StreamsRepository.skipAutoPlayStream(stream)
+                        if (!hasNext) {
+                            NuvioToastController.show(
+                                getString(
+                                    Res.string.player_error_failed_start_torrent,
+                                    error.message ?: getString(Res.string.p2p_error_unknown),
+                                ),
+                            )
+                        }
+                    } else {
+                        NuvioToastController.show(
+                            getString(
+                                Res.string.player_error_failed_start_torrent,
+                                error.message ?: getString(Res.string.p2p_error_unknown),
+                            ),
+                        )
+                    }
+                } finally {
+                    resolvingP2pExternalStream = false
+                }
+            }
+            return
+        }
+
         autoPlayNavigationStarted = replaceStreamRoute
-        val launchId = PlayerLaunchStore.put(playerLaunch)
+        val launchId = PlayerLaunchStore.put(basePlayerLaunch)
         StreamsRepository.cancelLoading()
-        navController.navigate(PlayerRoute(launchId = launchId, title = playerLaunch.title)) {
+        navController.navigate(PlayerRoute(launchId = launchId, title = basePlayerLaunch.title)) {
             if (replaceStreamRoute) {
                 popUpTo<StreamRoute> { inclusive = true }
             }
@@ -291,6 +349,7 @@ internal fun StreamDestination(
             resolvedResumePositionMs = resolvedResumePositionMs,
             resolvedResumeProgressFraction = resolvedResumeProgressFraction,
             replaceStreamRoute = isAutoPlay,
+            openExternally = !forceInternal && (forceExternal || playerSettings.externalPlayerEnabled),
         )
     }
 
@@ -334,7 +393,7 @@ internal fun StreamDestination(
                     resolvedResumePositionMs = launch.resumePositionMs,
                     resolvedResumeProgressFraction = launch.resumeProgressFraction,
                     forceExternal = false,
-                    forceInternal = true,
+                    forceInternal = false,
                     isAutoPlay = true,
                 )
                 reuseNavigated = true
@@ -490,7 +549,7 @@ internal fun StreamDestination(
                 resolvedResumePositionMs = launch.resumePositionMs,
                 resolvedResumeProgressFraction = launch.resumeProgressFraction,
                 forceExternal = false,
-                forceInternal = true,
+                forceInternal = false,
                 isAutoPlay = true,
             )
             StreamsRepository.consumeAutoPlay()
@@ -865,6 +924,8 @@ internal fun StreamDestination(
                         resolvedResumePositionMs = pending.resumePositionMs,
                         resolvedResumeProgressFraction = pending.resumeProgressFraction,
                         replaceStreamRoute = pending.isAutoPlay,
+                        openExternally = !pending.forceInternal &&
+                            (pending.forceExternal || playerSettings.externalPlayerEnabled),
                     )
                 },
                 onDismiss = {
@@ -884,7 +945,7 @@ internal fun StreamDestination(
                 resolvingDebridStream = resolvingDebridStream,
                 resolvingYouTubeStream = resolvingYouTubeStream,
                 onBack = onBack,
-                preparingPlayback = preparingServerStream,
+                preparingPlayback = preparingServerStream || resolvingP2pExternalStream,
             )
         }
     }

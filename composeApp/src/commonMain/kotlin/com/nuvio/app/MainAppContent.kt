@@ -129,6 +129,7 @@ import com.nuvio.app.features.library.toMetaPreview
 import com.nuvio.app.features.membership.MemberAccessRepository
 import com.nuvio.app.features.notifications.EpisodeReleaseNotificationsRepository
 import com.nuvio.app.features.p2p.P2pSettingsRepository
+import com.nuvio.app.features.p2p.P2pStreamingEngine
 import com.nuvio.app.features.party.PartyEvent
 import com.nuvio.app.features.party.PartyMedia
 import com.nuvio.app.features.party.PartyRepository
@@ -686,8 +687,12 @@ internal fun MainAppContent(
     var lastExternalPlayerLaunch by remember { mutableStateOf<PlayerLaunch?>(null) }
     val activePlaybackProfileId = activeProfileIndex ?: ProfileRepository.activeProfileId
     val launchExternalPlayer = rememberExternalPlayerLauncher { result ->
+        val externalLaunch = lastExternalPlayerLaunch
+        if (externalLaunch?.torrentInfoHash != null && visiblePlayerEntries == 0) {
+            P2pStreamingEngine.stopStream()
+        }
         if (result != null) {
-            val fallbackSession = lastExternalPlayerLaunch?.externalPlaybackSession()
+            val fallbackSession = externalLaunch?.externalPlaybackSession()
             coroutineScope.launch {
                 recordExternalPlaybackProgress(result, fallbackSession)
                 result.callbackId?.let(infusePlaybackCallbacks::consume)

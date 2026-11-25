@@ -43,6 +43,7 @@ jobs:
       - name: Prepare runtime properties
         env:
           LOCAL_PROPERTIES_BASE64: ${{ secrets.NUVIO_LOCAL_PROPERTIES_BASE64 }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.NUVIO_RELEASE_KEYSTORE_BASE64 }}
           INPUT_SUPABASE_URL: ${{ inputs.supabase_url }}
           INPUT_SUPABASE_ANON_KEY: ${{ inputs.supabase_anon_key }}
         run: |
@@ -59,6 +60,11 @@ jobs:
           if [ -n "$INPUT_SUPABASE_ANON_KEY" ]; then
             sed -i -E '/^[[:space:]]*NUVIO_SUPABASE_ANON_KEY[[:space:]]*=/d' local.properties
             printf 'NUVIO_SUPABASE_ANON_KEY=%s\n' "$INPUT_SUPABASE_ANON_KEY" >> local.properties
+          fi
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            keystore_path="${RUNNER_TEMP}/nuvio-release.jks"
+            printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "${keystore_path}"
+            printf '\nNUVIO_RELEASE_STORE_FILE=%s\n' "${keystore_path}" >> local.properties
           fi
 
       - name: Run playstore unit tests & verify playstore compilation
@@ -79,9 +85,22 @@ jobs:
             -Dkotlin.daemon.jvmargs="-Xmx3072M" \
             --stacktrace
 
-      - name: Build installable fullDebug APK
+      - name: Build signed fullRelease APKs
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.NUVIO_RELEASE_KEYSTORE_BASE64 }}
         run: |
-          ./gradlew :androidApp:assembleFullDebug \
+          if [ -z "$RELEASE_KEYSTORE_BASE64" ]; then
+            echo "Missing NUVIO_RELEASE_KEYSTORE_BASE64 secret for signed com.nuvio.app release build" >&2
+            exit 1
+          fi
+          for prop in NUVIO_RELEASE_STORE_PASSWORD NUVIO_RELEASE_KEY_ALIAS NUVIO_RELEASE_KEY_PASSWORD; do
+            if ! grep -Eq "^${prop}=.+" local.properties; then
+              echo "Missing required signing property in NUVIO_LOCAL_PROPERTIES_BASE64: ${prop}" >&2
+              exit 1
+            fi
+          done
+          ./gradlew :androidApp:assembleFullRelease \
+            -Pnuvio.app.versionName="1.1.0-beta.${{ github.run_number }}" \
             -Pnuvio.android.distribution=full \
             -Pnuvio.ios.distribution=appstore \
             -Dorg.gradle.jvmargs="-Xmx6144M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m" \
@@ -96,11 +115,11 @@ jobs:
           path: composeApp/build/reports/tests/
           retention-days: 5
 
-      - name: Upload fullDebug APK
+      - name: Upload fullRelease APKs
         uses: actions/upload-artifact@v7
         with:
-          name: nuvio-full-debug-apk
-          path: androidApp/build/outputs/apk/full/debug/androidApp-full-debug.apk
+          name: nuvio-full-release-apks
+          path: androidApp/build/outputs/apk/full/release/*.apk
           if-no-files-found: error
           retention-days: 7
 
@@ -185,36 +204,35 @@ jobs:
       GH_TOKEN: ${{ github.token }}
 
     steps:
-      - name: Download fullDebug APK
+      - name: Download fullRelease APKs
         uses: actions/download-artifact@v7
         with:
-          name: nuvio-full-debug-apk
+          name: nuvio-full-release-apks
           path: dist
 
       - name: Publish prerelease on fork
         env:
           SHA_SHORT: ${{ github.sha }}
         run: |
-          apk_path="dist/androidApp-full-debug.apk"
-          if [[ ! -f "${apk_path}" ]]; then
-            echo "Compiled APK not found at ${apk_path}" >&2
+          shopt -s nullglob
+          apk_files=(dist/*.apk)
+          if (( ${#apk_files[@]} == 0 )); then
+            echo "Compiled APKs not found in dist/" >&2
             exit 1
           fi
-          tag="torrent-downloads-r${{ github.run_number }}"
+          tag="1.1.0-beta.${{ github.run_number }}"
           sha_short="$(printf '%s' "${SHA_SHORT}" | cut -c1-8)"
-          title="Torrent Offline Downloads Preview (#${{ github.run_number }} - ${sha_short})"
+          title="Nuvio Fork ${tag} (${sha_short})"
           cat <<'EOF' > release-notes.md
           ### Qué incluye
           - Descarga offline de streams torrent/magnet con `nuvio-engine` en Android (`full` flavor).
+          - Soporte para reproducir torrents P2P (sin Debrid) en reproductores externos vía stream HTTP local.
           - Soporte para pausar, reanudar (`Range`), cancelar y eliminar sin duplicar caché ni archivos parciales.
           - Soporte para torrents multi-archivo (`fileIdx`), extracción de trackers `&tr=` / Base32 y descarga de subtítulos externos.
-          - Verificación automática: unit tests `playstore` y `full` (`:composeApp:testAndroidHostTest`), compilación `playstore`, compilación iOS (`appstore` y `full`) y armado de APK `fullDebug`.
-
-          > [!NOTE]
-          > Este APK (`com.nuviodebug.com`) está firmado con clave debug y puede instalarse en tu celular junto a la versión estable sin desinstalarla.
+          - Actualizador in-app apuntando a `ValeryJL/NuvioMobile` con firma release fija (`com.nuvio.app`).
           EOF
-          printf '\nBuild de prueba generado desde la rama `%s` (`%s`).\n' "${GITHUB_REF_NAME}" "${sha_short}" >> release-notes.md
-          gh release create "${tag}" "${apk_path}" \
+          printf '\nBuild firmado generado desde la rama `%s` (`%s`).\n' "${GITHUB_REF_NAME}" "${sha_short}" >> release-notes.md
+          gh release create "${tag}" "${apk_files[@]}" \
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --title "${title}" \

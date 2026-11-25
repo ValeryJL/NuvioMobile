@@ -444,8 +444,12 @@ private fun PlayerScreenRuntime.RenderPlayerControls(
             chapters = chapters,
             onChaptersClick = if (chapters.isNotEmpty()) { { openChaptersPanel() } } else null,
             onOpenInExternalPlayer = args.onOpenInExternalPlayer
-                ?.takeUnless { ServerStreams.isServerSourceId(activeProviderAddonId) }
+                ?.takeUnless {
+                    ServerStreams.isServerSourceId(activeProviderAddonId) ||
+                        playerSurfaceSourceUrl.isNullOrBlank()
+                }
                 ?.let { openExternal ->
+                val resolvedExternalUrl = playerSurfaceSourceUrl ?: return@let null
                 {
                     val loadedSubtitles = addonSubtitles
                         .takeIf { it.isNotEmpty() }
@@ -462,7 +466,7 @@ private fun PlayerScreenRuntime.RenderPlayerControls(
                     PlayerStreamsRepository.pauseSearchForPlayback()
                     openExternal(
                         ExternalPlayerPlaybackRequest(
-                            sourceUrl = activeSourceUrl,
+                            sourceUrl = resolvedExternalUrl,
                             title = title,
                             streamTitle = activeStreamTitle,
                             sourceHeaders = activeSourceHeaders,

@@ -104,6 +104,10 @@ internal fun PlayerDestination(
                 videoId = launch.videoId,
                 parentMetaId = launch.parentMetaId,
                 parentMetaType = launch.parentMetaType,
+                torrentInfoHash = launch.torrentInfoHash,
+                torrentFileIdx = launch.torrentFileIdx,
+                torrentFilename = launch.torrentFilename,
+                torrentTrackers = launch.torrentTrackers,
                 initialPositionMs = request.resumePositionMs,
                 subtitleExtras = launch.subtitleExtras,
             )
