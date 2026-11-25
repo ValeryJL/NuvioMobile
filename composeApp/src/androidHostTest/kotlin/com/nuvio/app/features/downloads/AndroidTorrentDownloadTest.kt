@@ -5,6 +5,7 @@ import com.nuvio.app.features.streams.StreamSubtitle
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
@@ -323,8 +324,8 @@ class AndroidTorrentDownloadTest {
     ) : TorrentSessionProvider {
         val openCount = AtomicInteger(0)
         val closeCount = AtomicInteger(0)
-        val openedFileIndices = mutableListOf<Int?>()
-        val cleanedUpHashes = mutableListOf<String>()
+        val openedFileIndices = CopyOnWriteArrayList<Int?>()
+        val cleanedUpHashes = CopyOnWriteArrayList<String>()
         val maxConcurrentPerHash = ConcurrentHashMap<String, Int>()
         private val activePerHash = ConcurrentHashMap<String, AtomicInteger>()
         private val perHashMutex = ConcurrentHashMap<String, Mutex>()
@@ -334,7 +335,7 @@ class AndroidTorrentDownloadTest {
             val mutex = if (serializePerHash) perHashMutex.getOrPut(hash) { Mutex() } else null
             mutex?.lock()
             openCount.incrementAndGet()
-            synchronized(openedFileIndices) { openedFileIndices += item.torrentFileIdx }
+            openedFileIndices += item.torrentFileIdx
             val active = activePerHash.getOrPut(hash) { AtomicInteger(0) }.incrementAndGet()
             maxConcurrentPerHash.merge(hash, active, ::maxOf)
             val idx = item.torrentFileIdx ?: 0

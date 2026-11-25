@@ -177,7 +177,7 @@ jobs:
   release:
     name: Create Fork Prerelease with APK
     if: github.repository == 'ValeryJL/NuvioMobile'
-    needs: [android, ios]
+    needs: [android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
