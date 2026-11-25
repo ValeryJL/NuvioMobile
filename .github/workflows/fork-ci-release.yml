@@ -4,6 +4,15 @@ on:
   push:
     branches: [feat/torrent-offline-downloads]
   workflow_dispatch:
+    inputs:
+      supabase_url:
+        description: Optional NUVIO_SUPABASE_URL override
+        required: false
+        type: string
+      supabase_anon_key:
+        description: Optional NUVIO_SUPABASE_ANON_KEY override
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -34,12 +43,22 @@ jobs:
       - name: Prepare runtime properties
         env:
           LOCAL_PROPERTIES_BASE64: ${{ secrets.NUVIO_LOCAL_PROPERTIES_BASE64 }}
+          INPUT_SUPABASE_URL: ${{ inputs.supabase_url }}
+          INPUT_SUPABASE_ANON_KEY: ${{ inputs.supabase_anon_key }}
         run: |
           if [ -n "$LOCAL_PROPERTIES_BASE64" ]; then
             printf '%s' "$LOCAL_PROPERTIES_BASE64" | base64 --decode > local.properties
             sed -i -E '/^[[:space:]]*(sdk\.dir|NUVIO_RELEASE_STORE_FILE)[[:space:]]*=/d' local.properties
           else
             touch local.properties
+          fi
+          if [ -n "$INPUT_SUPABASE_URL" ]; then
+            sed -i -E '/^[[:space:]]*(NUVIO_SUPABASE_URL|NUVIO_SUPABASE_FALLBACK_URL)[[:space:]]*=/d' local.properties
+            printf '\nNUVIO_SUPABASE_URL=%s\nNUVIO_SUPABASE_FALLBACK_URL=\n' "$INPUT_SUPABASE_URL" >> local.properties
+          fi
+          if [ -n "$INPUT_SUPABASE_ANON_KEY" ]; then
+            sed -i -E '/^[[:space:]]*NUVIO_SUPABASE_ANON_KEY[[:space:]]*=/d' local.properties
+            printf 'NUVIO_SUPABASE_ANON_KEY=%s\n' "$INPUT_SUPABASE_ANON_KEY" >> local.properties
           fi
 
       - name: Run playstore unit tests & verify playstore compilation
@@ -82,7 +101,6 @@ jobs:
         with:
           name: nuvio-full-debug-apk
           path: androidApp/build/outputs/apk/full/debug/androidApp-full-debug.apk
-          archive: false
           if-no-files-found: error
           retention-days: 7
 
@@ -115,12 +133,22 @@ jobs:
       - name: Prepare runtime properties
         env:
           LOCAL_PROPERTIES_BASE64: ${{ secrets.NUVIO_LOCAL_PROPERTIES_BASE64 }}
+          INPUT_SUPABASE_URL: ${{ inputs.supabase_url }}
+          INPUT_SUPABASE_ANON_KEY: ${{ inputs.supabase_anon_key }}
         run: |
           if [ -n "$LOCAL_PROPERTIES_BASE64" ]; then
             printf '%s' "$LOCAL_PROPERTIES_BASE64" | base64 --decode > local.properties
             sed -i '' -E '/^[[:space:]]*(sdk\.dir|NUVIO_RELEASE_STORE_FILE)[[:space:]]*=/d' local.properties
           else
             touch local.properties
+          fi
+          if [ -n "$INPUT_SUPABASE_URL" ]; then
+            sed -i '' -E '/^[[:space:]]*(NUVIO_SUPABASE_URL|NUVIO_SUPABASE_FALLBACK_URL)[[:space:]]*=/d' local.properties
+            printf '\nNUVIO_SUPABASE_URL=%s\nNUVIO_SUPABASE_FALLBACK_URL=\n' "$INPUT_SUPABASE_URL" >> local.properties
+          fi
+          if [ -n "$INPUT_SUPABASE_ANON_KEY" ]; then
+            sed -i '' -E '/^[[:space:]]*NUVIO_SUPABASE_ANON_KEY[[:space:]]*=/d' local.properties
+            printf 'NUVIO_SUPABASE_ANON_KEY=%s\n' "$INPUT_SUPABASE_ANON_KEY" >> local.properties
           fi
 
       - name: Prepare iOS dependencies
@@ -158,7 +186,7 @@ jobs:
 
     steps:
       - name: Download fullDebug APK
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v7
         with:
           name: nuvio-full-debug-apk
           path: dist
