@@ -443,42 +443,43 @@ private fun PlayerScreenRuntime.RenderPlayerControls(
             onEpisodesClick = if (isSeries) { { openEpisodesPanel() } } else null,
             chapters = chapters,
             onChaptersClick = if (chapters.isNotEmpty()) { { openChaptersPanel() } } else null,
-            onOpenInExternalPlayer = args.onOpenInExternalPlayer
-                ?.takeUnless {
-                    ServerStreams.isServerSourceId(activeProviderAddonId) ||
-                        playerSurfaceSourceUrl.isNullOrBlank()
-                }
-                ?.let { openExternal ->
-                val resolvedExternalUrl = playerSurfaceSourceUrl ?: return@let null
-                {
-                    val loadedSubtitles = addonSubtitles
-                        .takeIf { it.isNotEmpty() }
-                        ?.map { sub ->
-                            SubtitleInput(
-                                url = sub.url,
-                                name = buildString {
-                                    if (!sub.addonName.isNullOrBlank()) append("[${sub.addonName}] ")
-                                    append(sub.display)
-                                },
-                                lang = sub.language,
-                            )
-                        }
-                    PlayerStreamsRepository.pauseSearchForPlayback()
-                    openExternal(
-                        ExternalPlayerPlaybackRequest(
-                            sourceUrl = resolvedExternalUrl,
-                            title = title,
-                            streamTitle = activeStreamTitle,
-                            sourceHeaders = activeSourceHeaders,
-                            resumePositionMs = playbackSnapshot.positionMs,
-                            durationMs = playbackSnapshot.durationMs.takeIf { it > 0L },
-                            playbackSession = playbackSession,
-                            subtitles = loadedSubtitles,
-                            season = activeSeasonNumber,
-                            episode = activeEpisodeNumber,
-                            episodeTitle = activeEpisodeTitle,
-                        ),
-                    )
+            onOpenInExternalPlayer = run {
+                val resolvedExternalUrl = (if (isP2pPlaybackActive) p2pResolvedSourceUrl else activeSourceUrl)
+                    ?.takeIf { it.isNotBlank() }
+                val openExternal = args.onOpenInExternalPlayer
+                if (openExternal == null || ServerStreams.isServerSourceId(activeProviderAddonId) || resolvedExternalUrl == null) {
+                    null
+                } else {
+                    {
+                        val loadedSubtitles = addonSubtitles
+                            .takeIf { it.isNotEmpty() }
+                            ?.map { sub ->
+                                SubtitleInput(
+                                    url = sub.url,
+                                    name = buildString {
+                                        if (!sub.addonName.isNullOrBlank()) append("[${sub.addonName}] ")
+                                        append(sub.display)
+                                    },
+                                    lang = sub.language,
+                                )
+                            }
+                        PlayerStreamsRepository.pauseSearchForPlayback()
+                        openExternal(
+                            ExternalPlayerPlaybackRequest(
+                                sourceUrl = resolvedExternalUrl,
+                                title = title,
+                                streamTitle = activeStreamTitle,
+                                sourceHeaders = activeSourceHeaders,
+                                resumePositionMs = playbackSnapshot.positionMs,
+                                durationMs = playbackSnapshot.durationMs.takeIf { it > 0L },
+                                playbackSession = playbackSession,
+                                subtitles = loadedSubtitles,
+                                season = activeSeasonNumber,
+                                episode = activeEpisodeNumber,
+                                episodeTitle = activeEpisodeTitle,
+                            ),
+                        )
+                    }
                 }
             },
             onSubmitIntroClick = if (
