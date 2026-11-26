@@ -2,6 +2,7 @@ package com.nuvio.app.features.downloads
 
 import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.features.addons.AddonRepository
+import com.nuvio.app.features.addons.ManagedAddon
 import com.nuvio.app.features.addons.buildAddonResourceUrl
 import com.nuvio.app.features.addons.enabledAddons
 import com.nuvio.app.features.addons.fetchAddonResponseText
@@ -21,12 +22,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 internal data class SeasonPackEpisodeCandidate(
     val video: MetaVideo,
@@ -56,6 +59,7 @@ internal data class SeasonPackLookupProgress(
 internal object SeasonPackDownloadResolver {
     private const val ADDON_FETCH_CONCURRENCY = 3
     private const val DEBRID_RESOLVE_CONCURRENCY = 2
+    private const val ADDON_READY_TIMEOUT_MS = 10_000L
 
     fun supportsSeasonPackLookup(
         stream: StreamItem?,
@@ -165,10 +169,7 @@ internal object SeasonPackDownloadResolver {
         val debridEnabled = DebridSettingsRepository.snapshot().canResolvePlayableLinks
         val sourceTitle = anchorStream.addonName
 
-        val addons = withContext(Dispatchers.Main.immediate) {
-            AddonRepository.ensureLoaded()
-            AddonRepository.uiState.value.addons.enabledAddons()
-        }
+        val addons = findReadyEnabledAddons(targetAddonId = anchorStream.addonId)
         val targetAddon = addons.firstOrNull { addon ->
             val manifest = addon.manifest ?: return@firstOrNull false
             addon.streamAddonInstanceId(manifest.id) == anchorStream.addonId
@@ -298,6 +299,28 @@ internal object SeasonPackDownloadResolver {
             }
         }
     }
+
+    private suspend fun findReadyEnabledAddons(targetAddonId: String): List<ManagedAddon> =
+        withContext(Dispatchers.Main.immediate) {
+            AddonRepository.initialize()
+            val current = AddonRepository.uiState.value.addons.enabledAddons()
+            val hasTarget = current.any { addon ->
+                val manifest = addon.manifest ?: return@any false
+                addon.streamAddonInstanceId(manifest.id) == targetAddonId
+            }
+            if (hasTarget || current.none { it.manifest == null && it.isRefreshing }) {
+                return@withContext current
+            }
+            withTimeoutOrNull(ADDON_READY_TIMEOUT_MS) {
+                AddonRepository.uiState.first { state ->
+                    val enabled = state.addons.enabledAddons()
+                    enabled.any { addon ->
+                        val manifest = addon.manifest ?: return@any false
+                        addon.streamAddonInstanceId(manifest.id) == targetAddonId
+                    } || enabled.none { it.manifest == null && it.isRefreshing }
+                }
+            }?.addons?.enabledAddons() ?: AddonRepository.uiState.value.addons.enabledAddons()
+        }
 
     private suspend fun fetchMatchingEpisodeStream(
         addonUrl: String,

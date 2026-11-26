@@ -3,8 +3,16 @@ name: Fork CI & APK Prerelease
 on:
   push:
     branches: [feat/torrent-offline-downloads]
+  schedule:
+    # Verify iOS Kotlin/Native compilation twice a week without blocking Android push releases.
+    - cron: '0 6 * * 1,4'
   workflow_dispatch:
     inputs:
+      run_ios:
+        description: Verify iOS Kotlin compilation (macos-14)
+        required: false
+        default: false
+        type: boolean
       supabase_url:
         description: Optional NUVIO_SUPABASE_URL override
         required: false
@@ -24,6 +32,7 @@ concurrency:
 jobs:
   android:
     name: Android Tests (full & playstore) + Full Debug APK
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -125,7 +134,8 @@ jobs:
 
   ios:
     name: Verify iOS Kotlin Compilation (appstore & full)
-    runs-on: macos-15
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_ios)
+    runs-on: macos-14
     timeout-minutes: 45
 
     steps:
@@ -195,7 +205,7 @@ jobs:
 
   release:
     name: Create Fork Prerelease with APK
-    if: github.repository == 'ValeryJL/NuvioMobile'
+    if: github.repository == 'ValeryJL/NuvioMobile' && github.event_name != 'schedule'
     needs: [android]
     runs-on: ubuntu-latest
     permissions:
