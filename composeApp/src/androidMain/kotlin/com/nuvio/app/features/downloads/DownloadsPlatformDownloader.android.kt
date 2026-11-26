@@ -36,14 +36,21 @@ internal actual object DownloadsPlatformDownloader {
         downloadScheduler?.store?.transfers?.value?.values?.toList().orEmpty()
 
     actual fun restoreItem(item: DownloadItem): DownloadItem = downloadScheduler?.restore(item)
-        ?: if (item.status == DownloadStatus.Downloading) item.copy(status = DownloadStatus.Paused) else item
+        ?: if (item.status == DownloadStatus.Downloading) {
+            item.copy(
+                status = DownloadStatus.Paused,
+                pauseReason = item.pauseReason ?: DownloadPauseReasons.MISSING_TRANSFER_STATE,
+            )
+        } else {
+            item
+        }
 
     actual fun start(
         request: DownloadPlatformRequest,
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
         onSuccess: (localFileUri: String, totalBytes: Long?) -> Unit,
         onFailure: (message: String) -> Unit,
-        onPaused: () -> Unit,
+        onPaused: (reason: String?) -> Unit,
     ): DownloadsTaskHandle {
         val scheduler = checkNotNull(downloadScheduler) { "Downloads are not initialized" }
         val transfer = scheduler.enqueue(request.item)
@@ -57,17 +64,24 @@ internal actual object DownloadsPlatformDownloader {
                         DownloadStatus.Downloading -> onProgress(item.downloadedBytes, item.totalBytes)
                         DownloadStatus.Completed -> onSuccess(checkNotNull(item.localFileUri), item.totalBytes)
                         DownloadStatus.Failed -> onFailure(item.errorMessage ?: "Download failed")
-                        DownloadStatus.Paused -> onPaused()
+                        DownloadStatus.Paused -> onPaused(item.pauseReason)
                     }
                     item.status == DownloadStatus.Downloading
                 }.collect()
         }
         return object : DownloadsTaskHandle {
-            override fun cancel() {
+            override fun cancel(reason: String?) {
                 observer.cancel()
                 if (scheduler.store.get(request.destinationFileName)?.generation == transfer.generation) {
-                    scheduler.pause(request.destinationFileName)
+                    scheduler.pause(
+                        fileName = request.destinationFileName,
+                        reason = reason ?: DownloadPauseReasons.TRANSFER_CANCELLED,
+                    )
                 }
+            }
+
+            override fun detachObserver() {
+                observer.cancel()
             }
         }
     }

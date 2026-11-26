@@ -42,7 +42,7 @@ object DownloadsRepository {
     }
 
     fun clearLocalState() {
-        activeHandles.values.forEach(DownloadsTaskHandle::cancel)
+        activeHandles.values.forEach { it.cancel(DownloadPauseReasons.ACCOUNT_CLEARED) }
         activeHandles.clear()
         hasLoaded = false
         _hasUnseenCompleted.value = false
@@ -182,27 +182,28 @@ object DownloadsRepository {
         }
     }
 
-    fun pauseDownload(downloadId: String) {
+    fun pauseDownload(downloadId: String, reason: String = DownloadPauseReasons.USER_APP) {
         ensureLoaded()
         val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
         if (item.status != DownloadStatus.Downloading) return
 
-        activeHandles.remove(downloadId)?.cancel()
+        activeHandles.remove(downloadId)?.cancel(reason)
         mutateItem(downloadId) { current ->
             current.copy(
                 status = DownloadStatus.Paused,
                 updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                 errorMessage = null,
+                pauseReason = reason,
             )
         }
     }
 
-    fun pauseActiveDownloads() {
+    fun pauseActiveDownloads(reason: String = DownloadPauseReasons.USER_APP) {
         ensureLoaded()
         _uiState.value.items
             .filter { it.status == DownloadStatus.Downloading }
             .map { it.id }
-            .forEach(::pauseDownload)
+            .forEach { pauseDownload(it, reason) }
     }
 
     fun resumeDownload(downloadId: String) {
@@ -213,6 +214,7 @@ object DownloadsRepository {
         val reset = item.copy(
             status = DownloadStatus.Downloading,
             errorMessage = null,
+            pauseReason = null,
             localFileUri = null,
             updatedAtEpochMs = DownloadsClock.nowEpochMs(),
         )
@@ -229,7 +231,7 @@ object DownloadsRepository {
     internal fun reattachBackgroundDownload(downloadId: String) {
         if (!hasLoaded) return
         val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
-        activeHandles.remove(downloadId)?.cancel()
+        activeHandles.remove(downloadId)?.detachObserver()
         val restored = DownloadsPlatformDownloader.restoreItem(item)
         replaceItem(restored)
         persist()
@@ -294,6 +296,7 @@ object DownloadsRepository {
                             totalBytes = totalBytes?.takeIf { it > 0L },
                             updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                             errorMessage = null,
+                            pauseReason = null,
                         )
                     }
                 }
@@ -312,6 +315,7 @@ object DownloadsRepository {
                         },
                         totalBytes = totalBytes?.takeIf { it > 0L } ?: current.totalBytes,
                         errorMessage = null,
+                        pauseReason = null,
                         updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                     )
                 }
@@ -325,16 +329,21 @@ object DownloadsRepository {
                         current.copy(
                             status = DownloadStatus.Failed,
                             errorMessage = message.ifBlank { runBlocking { getString(Res.string.download_failed) } },
+                            pauseReason = null,
                             updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                         )
                     }
                 }
             },
-            onPaused = {
+            onPaused = { reason ->
                 activeHandles.remove(item.id)
                 mutateItem(item.id) { current ->
                     if (current.status != DownloadStatus.Downloading) return@mutateItem current
-                    current.copy(status = DownloadStatus.Paused, errorMessage = null)
+                    current.copy(
+                        status = DownloadStatus.Paused,
+                        errorMessage = null,
+                        pauseReason = reason ?: current.pauseReason,
+                    )
                 }
             },
         )

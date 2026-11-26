@@ -9,7 +9,8 @@ internal data class DownloadPlatformRequest(
 }
 
 internal interface DownloadsTaskHandle {
-    fun cancel()
+    fun cancel(reason: String? = null)
+    fun detachObserver() {}
 }
 
 internal expect object DownloadsPlatformDownloader {
@@ -20,7 +21,7 @@ internal expect object DownloadsPlatformDownloader {
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
         onSuccess: (localFileUri: String, totalBytes: Long?) -> Unit,
         onFailure: (message: String) -> Unit,
-        onPaused: () -> Unit,
+        onPaused: (reason: String?) -> Unit,
     ): DownloadsTaskHandle
 
     fun restoreItem(item: DownloadItem): DownloadItem

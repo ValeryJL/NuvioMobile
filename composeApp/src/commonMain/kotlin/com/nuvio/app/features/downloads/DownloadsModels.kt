@@ -53,6 +53,7 @@ data class DownloadItem(
     val downloadedBytes: Long = 0L,
     val totalBytes: Long? = null,
     val errorMessage: String? = null,
+    val pauseReason: String? = null,
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long,
 ) {

@@ -195,7 +195,11 @@ internal actual object DownloadsLiveStatusPlatform {
                 }
             }
 
-            DownloadStatus.Paused -> runBlocking { getString(Res.string.downloads_live_paused, detail) }
+            DownloadStatus.Paused -> runBlocking {
+                val base = getString(Res.string.downloads_live_paused, detail)
+                val diagnostic = item.pauseReason?.let { resolvePauseDiagnostic(it, includePrefix = false) }
+                if (diagnostic != null) "$base • $diagnostic" else base
+            }
             DownloadStatus.Failed -> item.errorMessage?.takeIf { it.isNotBlank() } ?: runBlocking { getString(Res.string.downloads_live_failed) }
             DownloadStatus.Completed -> runBlocking { getString(Res.string.downloads_live_completed) }
         }

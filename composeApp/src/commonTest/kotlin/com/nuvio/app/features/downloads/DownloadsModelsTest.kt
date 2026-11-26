@@ -282,4 +282,46 @@ class DownloadsModelsTest {
         )
         assertEquals(DownloadEnqueueResult.MissingUrl, emptyResult.result)
     }
+
+    @Test
+    fun pauseReasonRoundTripsAndParsesStopDetails() {
+        val encoded = DownloadPauseReasons.withDetail(
+            DownloadPauseReasons.MISSING_JOB,
+            DownloadPauseReasons.encodeStopDetail(
+                DownloadPauseReasons.STOP_CATEGORY_TIMEOUT,
+                "STOP_REASON_TIMEOUT",
+            ),
+        )
+        assertEquals("missing_job|TIMEOUT:STOP_REASON_TIMEOUT", encoded)
+
+        val parsed = DownloadPauseReasons.parse(encoded)
+        assertEquals(DownloadPauseReasons.MISSING_JOB, parsed.code)
+        assertEquals(
+            DownloadPauseReasons.STOP_CATEGORY_TIMEOUT to "STOP_REASON_TIMEOUT",
+            DownloadPauseReasons.parseStopDetail(parsed.detail!!),
+        )
+
+        val item = DownloadItem(
+            id = "d-paused",
+            contentType = "movie",
+            videoId = "tt999",
+            parentMetaId = "tt999",
+            parentMetaType = "movie",
+            title = "Paused Movie",
+            sourceUrl = "https://example.com/video.mp4",
+            fileName = "paused.mp4",
+            status = DownloadStatus.Paused,
+            pauseReason = encoded,
+            createdAtEpochMs = 1L,
+            updatedAtEpochMs = 2L,
+        )
+        val roundTripped = json.decodeFromString<DownloadItem>(json.encodeToString(item))
+        assertEquals(encoded, roundTripped.pauseReason)
+
+        val legacyWithoutPauseReason = json.encodeToString(item.copy(pauseReason = null))
+            .replace(",\"pauseReason\":null", "")
+            .replace("\"pauseReason\":null,", "")
+        val decodedLegacy = json.decodeFromString<DownloadItem>(legacyWithoutPauseReason)
+        assertNull(decodedLegacy.pauseReason)
+    }
 }

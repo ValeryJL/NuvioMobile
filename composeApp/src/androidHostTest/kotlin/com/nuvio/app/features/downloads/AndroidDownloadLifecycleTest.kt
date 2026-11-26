@@ -1,11 +1,19 @@
 package com.nuvio.app.features.downloads
 
 import android.app.job.JobInfo
+import android.app.job.JobScheduler
 import org.robolectric.RuntimeEnvironment
 import java.io.File
+import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.Rule
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
@@ -125,5 +133,70 @@ class AndroidDownloadLifecycleTest {
 
         assertEquals(DownloadStatus.Completed, scheduler.store.get(transfer.item.fileName)?.item?.status)
         assertEquals(10L, scheduler.store.get(transfer.item.fileName)?.item?.downloadedBytes)
+    }
+
+    @Test
+    fun enqueueReschedulesMissingSystemJobOnApi34() {
+        val context = RuntimeEnvironment.getApplication()
+        val scheduler = AndroidDownloadScheduler(context)
+        val existing = scheduler.store.begin(downloadItem().copy(fileName = "requeue.mkv"))
+        val jobScheduler = context.getSystemService(JobScheduler::class.java)
+        assertEquals(null, jobScheduler.getPendingJob(existing.jobId))
+
+        val transfer = scheduler.enqueue(existing.item)
+
+        assertEquals(existing.generation, transfer.generation)
+        assertNotNull(jobScheduler.getPendingJob(transfer.jobId))
+    }
+
+    @Test
+    fun missingSystemJobRecordsDiagnosticStopReasonOnRestore() {
+        val context = RuntimeEnvironment.getApplication()
+        val scheduler = AndroidDownloadScheduler(context)
+        val transfer = scheduler.store.begin(downloadItem().copy(fileName = "timed-out.mkv"))
+        val timeoutDetail = DownloadPauseReasons.encodeStopDetail(
+            DownloadPauseReasons.STOP_CATEGORY_TIMEOUT,
+            "STOP_REASON_TIMEOUT",
+        )
+        scheduler.recordSystemStop(transfer, timeoutDetail)
+
+        val restored = scheduler.restore(transfer.item)
+        assertEquals(DownloadStatus.Paused, restored.status)
+        assertEquals("missing_job|TIMEOUT:STOP_REASON_TIMEOUT", restored.pauseReason)
+    }
+
+    @Test
+    fun restoreDoesNotPauseActivelyExecutingTransfer(): Unit = runBlocking {
+        val context = RuntimeEnvironment.getApplication()
+        val started = CountDownLatch(1)
+        val allowFinish = CountDownLatch(1)
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    started.countDown()
+                    allowFinish.await(5, TimeUnit.SECONDS)
+                    return MockResponse().setBody("active payload")
+                }
+            }
+            val scheduler = AndroidDownloadScheduler(context)
+            val item = downloadItem(server.url("/active").toString(), "active-exec").copy(fileName = "active.mkv")
+            val transfer = scheduler.store.begin(item)
+            val job = launch(Dispatchers.IO) { scheduler.execute(transfer) { } }
+
+            assertTrue(started.await(5, TimeUnit.SECONDS))
+            val restoredDuringExecution = scheduler.restore(item)
+            assertEquals(DownloadStatus.Downloading, restoredDuringExecution.status)
+
+            allowFinish.countDown()
+            job.join()
+            assertEquals(DownloadStatus.Completed, scheduler.store.get(item.fileName)?.item?.status)
+        }
+    }
+
+    @Test
+    fun shouldRetryRespectsExplicitHigherMaxRetries() {
+        assertFalse(shouldRetryAndroidDownload(IOException("reset"), 4))
+        assertTrue(shouldRetryAndroidDownload(IOException("reset"), 4, maxRetries = 8))
+        assertFalse(shouldRetryAndroidDownload(IOException("reset"), 8, maxRetries = 8))
     }
 }

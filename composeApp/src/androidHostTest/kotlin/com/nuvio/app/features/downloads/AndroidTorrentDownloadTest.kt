@@ -317,6 +317,53 @@ class AndroidTorrentDownloadTest {
         }
     }
 
+    @Test
+    fun cleanupTorrentArtifactsTriggersOnCompletionOnlyAfterPausedSiblingsFinish(): Unit = runBlocking {
+        val context = RuntimeEnvironment.getApplication()
+        MockWebServer().use { server ->
+            val payload1 = "episode-one-shared-torrent".encodeToByteArray()
+            val payload2 = "episode-two-shared-torrent".encodeToByteArray()
+            val sharedHash = "0123456789abcdef0123456789abcdef01234567"
+            server.dispatcher = torrentRangeDispatcher(server, mapOf(1 to payload1, 2 to payload2))
+            val provider = FakeTorrentSessionProvider(
+                server,
+                filesByIndex = mapOf(1 to payload1, 2 to payload2),
+            )
+            val scheduler = AndroidDownloadScheduler(context, provider)
+            val ep1 = torrentDownloadItem(
+                id = "cleanup-ep1-${UUID.randomUUID()}",
+                infoHash = sharedHash,
+                fileIdx = 1,
+                fileName = "cleanup-ep1-${UUID.randomUUID()}.mkv",
+            )
+            val ep2 = torrentDownloadItem(
+                id = "cleanup-ep2-${UUID.randomUUID()}",
+                infoHash = sharedHash,
+                fileIdx = 2,
+                fileName = "cleanup-ep2-${UUID.randomUUID()}.mkv",
+            )
+            val transfer1 = scheduler.store.begin(ep1)
+            scheduler.store.begin(ep2)
+            scheduler.pause(ep2.fileName, DownloadPauseReasons.USER_APP)
+
+            try {
+                assertFalse(scheduler.execute(transfer1) { })
+                assertEquals(DownloadStatus.Completed, scheduler.store.get(ep1.fileName)?.item?.status)
+                assertTrue(provider.cleanedUpHashes.isEmpty())
+
+                val resumedEp2 = scheduler.store.begin(ep2.copy(status = DownloadStatus.Downloading))
+                assertFalse(scheduler.execute(resumedEp2) { })
+                assertEquals(DownloadStatus.Completed, scheduler.store.get(ep2.fileName)?.item?.status)
+                assertEquals(listOf(sharedHash), provider.cleanedUpHashes)
+            } finally {
+                scheduler.remove(ep1.fileName)
+                scheduler.remove(ep2.fileName)
+                File(scheduler.directory, ep1.fileName).delete()
+                File(scheduler.directory, ep2.fileName).delete()
+            }
+        }
+    }
+
     private class FakeTorrentSessionProvider(
         private val server: MockWebServer,
         private val filesByIndex: Map<Int, ByteArray>,

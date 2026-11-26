@@ -2510,4 +2510,26 @@
     <string name="subtitle_shadow_opacity">Opacidad de la sombra</string>
     <string name="subtitle_shadow_size">Tamaño de la sombra</string>
     <string name="subtitle_reset_appearance">Restablecer apariencia</string>
+    <string name="downloads_pause_reason_prefix">Motivo de pausa: %1$s</string>
+    <string name="downloads_pause_reason_user_app">Pausada desde Descargas</string>
+    <string name="downloads_pause_reason_user_notification">Pausada desde la notificación</string>
+    <string name="downloads_pause_reason_system_user_stop">Detenida desde los controles del sistema Android</string>
+    <string name="downloads_pause_reason_missing_job">Android detuvo o eliminó la tarea en segundo plano (optimización de batería o cierre del sistema)</string>
+    <string name="downloads_pause_reason_missing_job_detail">Android detuvo la tarea en segundo plano: %1$s</string>
+    <string name="downloads_pause_reason_worker_stopped">La tarea en segundo plano fue detenida por Android</string>
+    <string name="downloads_pause_reason_worker_stopped_detail">La tarea en segundo plano fue detenida por Android: %1$s</string>
+    <string name="downloads_pause_reason_fg_service_blocked">Android bloqueó el servicio en primer plano</string>
+    <string name="downloads_pause_reason_fg_service_blocked_detail">Android bloqueó el servicio en primer plano: %1$s</string>
+    <string name="downloads_pause_reason_missing_transfer_state">No se pudo restaurar el estado local de la transferencia</string>
+    <string name="downloads_pause_reason_transfer_cancelled">Se canceló la transferencia antes de completarse</string>
+    <string name="downloads_pause_reason_account_cleared">Cambió el perfil o la sesión activa</string>
+    <string name="downloads_pause_reason_ios_background">La app pasó a segundo plano</string>
+    <string name="downloads_pause_reason_unknown">Pausada inesperadamente (sin motivo reportado)</string>
+    <string name="downloads_stop_detail_timeout">límite de tiempo de ejecución (%1$s)</string>
+    <string name="downloads_stop_detail_quota">cuota de segundo plano agotada (%1$s)</string>
+    <string name="downloads_stop_detail_background_restriction">restricción de batería o segundo plano (%1$s)</string>
+    <string name="downloads_stop_detail_app_standby">restricción por inactividad de la app (%1$s)</string>
+    <string name="downloads_stop_detail_connectivity">red desconectada (%1$s)</string>
+    <string name="downloads_stop_detail_device_state">restricción térmica, de memoria o inactividad del dispositivo (%1$s)</string>
+    <string name="downloads_stop_detail_preempt">interrumpida por prioridad del sistema (%1$s)</string>
 </resources>

@@ -62,7 +62,7 @@ fun handleDownloadsBackgroundEvents(
 }
 
 fun pauseDownloadsForAppBackground() {
-    DownloadsRepository.pauseActiveDownloads()
+    DownloadsRepository.pauseActiveDownloads(DownloadPauseReasons.IOS_BACKGROUND)
 }
 
 @OptIn(ExperimentalForeignApi::class)
@@ -74,7 +74,7 @@ internal actual object DownloadsPlatformDownloader {
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
         onSuccess: (localFileUri: String, totalBytes: Long?) -> Unit,
         onFailure: (message: String) -> Unit,
-        onPaused: () -> Unit,
+        onPaused: (reason: String?) -> Unit,
     ): DownloadsTaskHandle {
         val job = SupervisorJob()
         val scope = CoroutineScope(job + Dispatchers.Default)
@@ -151,7 +151,11 @@ internal actual object DownloadsPlatformDownloader {
 
     actual fun restoreItem(item: DownloadItem): DownloadItem =
         if (item.status == DownloadStatus.Downloading) {
-            item.copy(status = DownloadStatus.Paused, errorMessage = null)
+            item.copy(
+                status = DownloadStatus.Paused,
+                errorMessage = null,
+                pauseReason = item.pauseReason ?: DownloadPauseReasons.IOS_BACKGROUND,
+            )
         } else {
             item
         }
@@ -213,7 +217,7 @@ private class IosDownloadsTaskHandle(
         this.session = session
     }
 
-    override fun cancel() {
+    override fun cancel(reason: String?) {
         cancelNativeTask()
         job.cancel()
     }

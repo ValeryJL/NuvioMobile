@@ -16,12 +16,23 @@ import kotlinx.coroutines.launch
 class DownloadsTransferJobService : JobService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val runs = mutableMapOf<String, Job>()
+    private val activeNetworks = mutableMapOf<String, Long>()
 
     override fun onStartJob(params: JobParameters): Boolean = startTransfer(params)
 
     override fun onNetworkChanged(params: JobParameters) {
+        val fileName = params.extras.getString(AndroidDownloadScheduler.FILE_NAME) ?: return
         val generation = params.extras.getString(AndroidDownloadScheduler.GENERATION) ?: return
-        if (runs[generation]?.isActive == true) startTransfer(params)
+        if (runs[generation]?.isActive != true) return
+        val transfer = DownloadsPlatformDownloader.scheduler(this).store.get(fileName)
+            ?.takeIf { it.generation == generation } ?: return
+        // Torrent downloads use NuvioEngine sockets bound to the system network; re-launching
+        // on transient network ticks tears down the engine session unnecessarily.
+        if (transfer.item.isTorrentDownload) return
+        val nextNetworkHandle = params.network?.networkHandle ?: return
+        val previousNetworkHandle = activeNetworks[generation]
+        if (previousNetworkHandle == nextNetworkHandle) return
+        startTransfer(params)
     }
 
     private fun startTransfer(params: JobParameters): Boolean {
@@ -33,6 +44,8 @@ class DownloadsTransferJobService : JobService() {
         DownloadsLiveStatusPlatform.initialize(this)
         setNotification(params, DownloadsLiveStatusPlatform.notificationId(transfer.item.id),
             DownloadsLiveStatusPlatform.buildNotification(this, transfer.item), JOB_END_NOTIFICATION_POLICY_REMOVE)
+        val networkHandle = params.network?.networkHandle
+        if (networkHandle != null) activeNetworks[generation] = networkHandle else activeNetworks.remove(generation)
         val run = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 val retry = scheduler.execute(transfer, params.network) { updated ->
@@ -43,7 +56,10 @@ class DownloadsTransferJobService : JobService() {
                 jobFinished(params, retry)
                 scheduler.notifyCurrent(fileName)
             } finally {
-                if (runs[generation] === currentCoroutineContext()[Job]) runs.remove(generation)
+                if (runs[generation] === currentCoroutineContext()[Job]) {
+                    runs.remove(generation)
+                    activeNetworks.remove(generation)
+                }
             }
         }
         runs.put(generation, run)?.cancel()
@@ -56,10 +72,14 @@ class DownloadsTransferJobService : JobService() {
         val fileName = params.extras.getString(AndroidDownloadScheduler.FILE_NAME) ?: return false
         val generation = params.extras.getString(AndroidDownloadScheduler.GENERATION) ?: return false
         runs.remove(generation)?.cancel()
+        activeNetworks.remove(generation)
         val transfer = scheduler.store.get(fileName)?.takeIf { it.generation == generation } ?: return false
         if (params.stopReason == JobParameters.STOP_REASON_USER) {
-            scheduler.pause(fileName)
+            scheduler.pause(fileName, DownloadPauseReasons.SYSTEM_USER_STOP)
             return false
+        }
+        AndroidDownloadStopReasons.categorizeJobStopReason(params.stopReason)?.let { stopDetail ->
+            scheduler.recordSystemStop(transfer, stopDetail)
         }
         return scheduler.isActive(transfer)
     }

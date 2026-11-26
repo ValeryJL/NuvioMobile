@@ -16,7 +16,7 @@ class DownloadsNotificationActionReceiver : BroadcastReceiver() {
         val transfer = fileName?.let(scheduler.store::get)?.takeIf { it.item.id == downloadId }
         if (transfer != null) {
             when (action) {
-                actionPause -> scheduler.pause(transfer.item.fileName)
+                actionPause -> scheduler.pause(transfer.item.fileName, DownloadPauseReasons.USER_NOTIFICATION)
                 actionResume -> if (transfer.item.status == DownloadStatus.Paused || transfer.item.status == DownloadStatus.Failed) {
                     scheduler.enqueue(transfer.item)
                     DownloadsRepository.reattachBackgroundDownload(downloadId)
@@ -31,7 +31,7 @@ class DownloadsNotificationActionReceiver : BroadcastReceiver() {
         DownloadsRepository.ensureLoaded()
 
         when (action) {
-            actionPause -> DownloadsRepository.pauseDownload(downloadId)
+            actionPause -> DownloadsRepository.pauseDownload(downloadId, DownloadPauseReasons.USER_NOTIFICATION)
             actionResume -> DownloadsRepository.resumeDownload(downloadId)
         }
     }

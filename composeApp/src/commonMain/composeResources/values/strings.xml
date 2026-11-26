@@ -2585,4 +2585,26 @@
     <string name="subtitle_shadow_size">Shadow size</string>
     <string name="subtitle_outline_width">Outline width</string>
     <string name="subtitle_reset_appearance">Reset appearance</string>
+    <string name="downloads_pause_reason_prefix">Pause reason: %1$s</string>
+    <string name="downloads_pause_reason_user_app">Paused from Downloads</string>
+    <string name="downloads_pause_reason_user_notification">Paused from notification</string>
+    <string name="downloads_pause_reason_system_user_stop">Stopped from Android system controls</string>
+    <string name="downloads_pause_reason_missing_job">Android stopped or dropped the background job (battery optimization or OS kill)</string>
+    <string name="downloads_pause_reason_missing_job_detail">Android stopped the background job: %1$s</string>
+    <string name="downloads_pause_reason_worker_stopped">Background worker stopped by Android</string>
+    <string name="downloads_pause_reason_worker_stopped_detail">Background worker stopped by Android: %1$s</string>
+    <string name="downloads_pause_reason_fg_service_blocked">Android blocked background foreground service execution</string>
+    <string name="downloads_pause_reason_fg_service_blocked_detail">Android blocked foreground service: %1$s</string>
+    <string name="downloads_pause_reason_missing_transfer_state">Local background transfer state could not be restored</string>
+    <string name="downloads_pause_reason_transfer_cancelled">Transfer was cancelled before completion</string>
+    <string name="downloads_pause_reason_account_cleared">Active profile or account session changed</string>
+    <string name="downloads_pause_reason_ios_background">App moved to background</string>
+    <string name="downloads_pause_reason_unknown">Paused unexpectedly (no reason reported)</string>
+    <string name="downloads_stop_detail_timeout">execution timeout (%1$s)</string>
+    <string name="downloads_stop_detail_quota">background quota exceeded (%1$s)</string>
+    <string name="downloads_stop_detail_background_restriction">battery/background restriction (%1$s)</string>
+    <string name="downloads_stop_detail_app_standby">app standby restriction (%1$s)</string>
+    <string name="downloads_stop_detail_connectivity">network disconnected (%1$s)</string>
+    <string name="downloads_stop_detail_device_state">device thermal, memory, or idle constraint (%1$s)</string>
+    <string name="downloads_stop_detail_preempt">preempted by system priority (%1$s)</string>
 </resources>

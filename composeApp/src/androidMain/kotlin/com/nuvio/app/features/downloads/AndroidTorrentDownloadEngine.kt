@@ -36,7 +36,7 @@ private const val TAG = "AndroidTorrentDownload"
 private const val DOWNLOAD_ENGINE_DIR = "nuvio-downloads-engine"
 
 internal val torrentLoopbackHttpClient: OkHttpClient = downloadHttpClient.newBuilder()
-    .readTimeout(90, TimeUnit.SECONDS)
+    .readTimeout(180, TimeUnit.SECONDS)
     .build()
 
 internal interface TorrentStreamSession {
@@ -177,7 +177,7 @@ internal class NuvioEngineTorrentSessionProvider(
         lifecycleMutex.withLock {
             if (activeTorrentCounts.containsKey(canonicalHash)) return@withLock
             deleteTorrentCacheAndResume(canonicalHash)
-            if (activeLeases == 0 && engine == null && activeTorrentCounts.isEmpty()) {
+            if (activeLeases == 0 && engine == null && activeTorrentCounts.isEmpty() && !hasSavedResumeStateLocked()) {
                 payloadDirectory.deleteRecursively()
             }
         }
@@ -199,7 +199,7 @@ internal class NuvioEngineTorrentSessionProvider(
             "Could not create Nuvio downloads torrent cache directory"
         }
         migrateNestedPayloadDirectory(cacheDirectory)
-        if (activeTorrentCounts.isEmpty()) {
+        if (activeTorrentCounts.isEmpty() && !hasSavedResumeStateLocked()) {
             payloadDirectory.deleteRecursively()
         }
 
@@ -250,10 +250,8 @@ internal class NuvioEngineTorrentSessionProvider(
                 .onFailure { Log.w(TAG, "Error removing download torrent", it) }
             torrentErrors.remove(torrentId)
         }
-        runCatching { activeEngine.reclaimDiskCache(0L) }
-            .onFailure { Log.w(TAG, "Error reclaiming download torrent cache", it) }
-        deleteTorrentCacheAndResume(canonicalHash)
-
+        // Keep .resume and piece cache intact across pauses/retries; cleanupTorrentArtifacts
+        // removes them when the download completes or is deleted.
         lifecycleMutex.withLock {
             val remainingForHash = (activeTorrentCounts[canonicalHash] ?: 1) - 1
             if (remainingForHash <= 0) {
@@ -264,10 +262,13 @@ internal class NuvioEngineTorrentSessionProvider(
             activeLeases = (activeLeases - 1).coerceAtLeast(0)
             if (activeLeases == 0) {
                 shutdownEngineLocked()
-                payloadDirectory.deleteRecursively()
             }
         }
     }
+
+    private fun hasSavedResumeStateLocked(): Boolean =
+        stateDirectory.listFiles()?.any { it.name.endsWith(".resume") } == true ||
+            File(stateDirectory, "resume").listFiles()?.isNotEmpty() == true
 
     private suspend fun shutdownEngineLocked() {
         val current = engine ?: return
