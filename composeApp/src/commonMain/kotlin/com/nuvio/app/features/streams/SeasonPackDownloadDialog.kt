@@ -1,17 +1,23 @@
 package com.nuvio.app.features.streams
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.triStateToggleable
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TriStateCheckbox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -20,14 +26,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import com.nuvio.app.core.ui.DialogButton
 import com.nuvio.app.core.ui.DialogButtonStyle
 import com.nuvio.app.core.ui.DialogButtons
 import com.nuvio.app.core.ui.DialogOption
 import com.nuvio.app.core.ui.DialogSurface
-import com.nuvio.app.core.ui.NuvioActionLabel
 import com.nuvio.app.core.ui.NuvioLoadingIndicator
 import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.nuvio
@@ -37,7 +44,6 @@ import com.nuvio.app.features.downloads.SeasonPackEpisodeCandidate
 import com.nuvio.app.features.downloads.SeasonPackLookupProgress
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_cancel
-import nuvio.composeapp.generated.resources.downloads_season_pack_deselect_all
 import nuvio.composeapp.generated.resources.downloads_season_pack_download_button
 import nuvio.composeapp.generated.resources.downloads_season_pack_found_summary
 import nuvio.composeapp.generated.resources.downloads_season_pack_load_failed
@@ -97,7 +103,11 @@ internal fun SeasonPackDownloadDialog(
     val selectableEpisodes = currentProgress?.episodes?.filter { it.isSelectable }.orEmpty()
     val selectableNumbers = selectableEpisodes.map { it.episodeNumber }.toSet()
     val effectiveSelected = selectedEpisodeNumbers.intersect(selectableNumbers)
-    val allSelected = selectableEpisodes.isNotEmpty() && effectiveSelected.size == selectableEpisodes.size
+    val toggleState = when {
+        effectiveSelected.isEmpty() -> ToggleableState.Off
+        effectiveSelected.size == selectableEpisodes.size -> ToggleableState.On
+        else -> ToggleableState.Indeterminate
+    }
 
     DialogSurface(
         onDismissRequest = { if (!isSubmitting) onDismiss() },
@@ -151,35 +161,68 @@ internal fun SeasonPackDownloadDialog(
                     )
                 }
             } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = stringResource(
-                            Res.string.downloads_season_pack_found_summary,
-                            matchedCount,
-                            currentProgress.totalEpisodes,
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = tokens.colors.textMuted,
-                    )
-                    if (selectableEpisodes.size > 1) {
-                        NuvioActionLabel(
-                            text = if (allSelected) {
-                                stringResource(Res.string.downloads_season_pack_deselect_all)
-                            } else {
-                                stringResource(Res.string.downloads_season_pack_select_all, selectableEpisodes.size)
-                            },
-                            onClick = {
-                                if (!isSubmitting) {
-                                    selectedEpisodeNumbers = if (allSelected) {
+                Text(
+                    text = stringResource(
+                        Res.string.downloads_season_pack_found_summary,
+                        matchedCount,
+                        currentProgress.totalEpisodes,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = tokens.colors.textMuted,
+                )
+                if (selectableEpisodes.size > 1) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(tokens.shapes.compactCard)
+                            .background(
+                                if (toggleState != ToggleableState.Off) {
+                                    tokens.colors.accent.copy(alpha = tokens.opacity.subtle)
+                                } else {
+                                    tokens.colors.textPrimary.copy(alpha = tokens.opacity.subtle)
+                                },
+                            )
+                            .triStateToggleable(
+                                state = toggleState,
+                                enabled = !isSubmitting,
+                                role = Role.Checkbox,
+                                onClick = {
+                                    selectedEpisodeNumbers = if (toggleState == ToggleableState.On) {
                                         emptySet()
                                     } else {
                                         selectableNumbers
                                     }
-                                }
+                                },
+                            )
+                            .padding(horizontal = NuvioTokens.Space.s12, vertical = NuvioTokens.Space.s8),
+                        horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s10),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TriStateCheckbox(
+                            state = toggleState,
+                            onClick = null,
+                            enabled = !isSubmitting,
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = tokens.colors.accent,
+                                uncheckedColor = tokens.colors.textSecondary,
+                                checkmarkColor = tokens.colors.onAccent,
+                            ),
+                        )
+                        Text(
+                            text = stringResource(Res.string.downloads_season_pack_select_all),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = tokens.colors.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "${effectiveSelected.size}/${selectableEpisodes.size}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (toggleState != ToggleableState.Off) {
+                                tokens.colors.accent
+                            } else {
+                                tokens.colors.textMuted
                             },
                         )
                     }
@@ -196,7 +239,7 @@ internal fun SeasonPackDownloadDialog(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(NuvioTokens.Space.s80 + NuvioTokens.Space.s80 + NuvioTokens.Space.s80 + NuvioTokens.Space.s40),
+                    .heightIn(max = NuvioTokens.Space.s80 + NuvioTokens.Space.s80 + NuvioTokens.Space.s80 + NuvioTokens.Space.s40),
                 verticalArrangement = Arrangement.spacedBy(tokens.spacing.controlGap),
             ) {
                 items(

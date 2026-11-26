@@ -2581,8 +2581,7 @@
     <string name="downloads_season_pack_title">Temporada %1$d • %2$s</string>
     <string name="downloads_season_pack_scanning">Buscando capítulos en esta fuente (%1$d / %2$d)…</string>
     <string name="downloads_season_pack_found_summary">%1$d de %2$d capítulos encontrados en esta fuente</string>
-    <string name="downloads_season_pack_select_all">Seleccionar todos (%1$d)</string>
-    <string name="downloads_season_pack_deselect_all">Deseleccionar todos</string>
+    <string name="downloads_season_pack_select_all">Seleccionar todos</string>
     <string name="downloads_season_pack_single_only">Solo este capítulo coincide con este torrent o fuente. No parece incluir otros capítulos de la temporada.</string>
     <string name="downloads_season_pack_load_failed">No se pudo cargar la lista de capítulos de la temporada</string>
     <string name="downloads_season_pack_download_button">Descargar (%1$d)</string>

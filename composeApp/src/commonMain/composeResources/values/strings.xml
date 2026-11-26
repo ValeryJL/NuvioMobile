@@ -2628,8 +2628,7 @@
     <string name="downloads_season_pack_title">Season %1$d • %2$s</string>
     <string name="downloads_season_pack_scanning">Checking episodes in this source (%1$d / %2$d)…</string>
     <string name="downloads_season_pack_found_summary">%1$d of %2$d episodes found in this source</string>
-    <string name="downloads_season_pack_select_all">Select all (%1$d)</string>
-    <string name="downloads_season_pack_deselect_all">Clear selection</string>
+    <string name="downloads_season_pack_select_all">Select all</string>
     <string name="downloads_season_pack_single_only">Only this episode matched this torrent or source. It does not appear to include other episodes of the season.</string>
     <string name="downloads_season_pack_load_failed">Could not load the season episode list</string>
     <string name="downloads_season_pack_download_button">Download (%1$d)</string>
