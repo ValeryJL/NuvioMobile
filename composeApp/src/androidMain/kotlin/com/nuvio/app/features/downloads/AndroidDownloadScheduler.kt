@@ -95,9 +95,14 @@ internal class AndroidDownloadScheduler(
             })
             .build()
 
+    private val namespacedJobScheduler: JobScheduler by lazy(::createNamespacedJobScheduler)
+
     @RequiresApi(34)
-    internal fun jobScheduler(): JobScheduler =
+    private fun createNamespacedJobScheduler(): JobScheduler =
         context.getSystemService(JobScheduler::class.java).forNamespace(JOB_NAMESPACE)
+
+    @RequiresApi(34)
+    internal fun jobScheduler(): JobScheduler = namespacedJobScheduler
 
     fun restore(item: DownloadItem): DownloadItem {
         var transfer = store.get(item.fileName)?.takeIf { it.item.id == item.id }
