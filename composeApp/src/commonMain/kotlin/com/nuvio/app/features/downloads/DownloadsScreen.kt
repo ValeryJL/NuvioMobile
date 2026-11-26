@@ -173,6 +173,9 @@ fun DownloadsScreen(
         onDismiss = { actionsItemId = null },
         onPlay = { actionsItem?.let(onOpenDownload) },
         onToggleTransfer = { actionsItem?.toggleTransfer() },
+        onStartNow = actionsItem?.takeIf { it.status == DownloadStatus.Queued }?.let { queuedItem ->
+            { DownloadsRepository.startQueuedDownloadNow(queuedItem.id) }
+        },
         onOpenDetails = { actionsItem?.let(onOpenDetails) },
         onDelete = { deleteItemId = actionsItem?.id },
     )
@@ -223,18 +226,20 @@ private fun LazyListScope.downloadsRootContent(
 
     if (activeItems.isNotEmpty()) {
         item(key = "active_header") {
-            val hasDownloading = activeItems.any { it.status == DownloadStatus.Downloading }
+            val hasDownloadingOrQueued = activeItems.any {
+                it.status == DownloadStatus.Downloading || it.status == DownloadStatus.Queued
+            }
             val hasPaused = activeItems.any { it.status == DownloadStatus.Paused }
             SectionHeader(
                 title = stringResource(Res.string.downloads_section_active),
                 actionText = when {
                     activeItems.size < 2 -> null
-                    hasDownloading -> stringResource(Res.string.downloads_pause_all)
+                    hasDownloadingOrQueued -> stringResource(Res.string.downloads_pause_all)
                     hasPaused -> stringResource(Res.string.downloads_resume_all)
                     else -> null
                 },
                 onAction = {
-                    if (hasDownloading) {
+                    if (hasDownloadingOrQueued) {
                         DownloadsRepository.pauseActiveDownloads()
                     } else {
                         DownloadsRepository.resumePausedDownloads()
@@ -485,7 +490,7 @@ private fun List<DownloadItem>.downloadedEntries(): List<DownloadedEntry> {
 
 private fun DownloadItem.toggleTransfer() {
     when (status) {
-        DownloadStatus.Downloading -> DownloadsRepository.pauseDownload(id)
+        DownloadStatus.Downloading, DownloadStatus.Queued -> DownloadsRepository.pauseDownload(id)
         DownloadStatus.Paused -> DownloadsRepository.resumeDownload(id)
         DownloadStatus.Failed -> DownloadsRepository.retryDownload(id)
         DownloadStatus.Completed -> Unit

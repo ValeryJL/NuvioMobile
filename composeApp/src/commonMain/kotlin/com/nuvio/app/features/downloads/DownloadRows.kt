@@ -46,6 +46,7 @@ import nuvio.composeapp.generated.resources.downloads_speed
 import nuvio.composeapp.generated.resources.downloads_status_downloading
 import nuvio.composeapp.generated.resources.downloads_status_failed
 import nuvio.composeapp.generated.resources.downloads_status_paused
+import nuvio.composeapp.generated.resources.downloads_status_queued
 import nuvio.composeapp.generated.resources.episodes_cd_watched
 import nuvio.composeapp.generated.resources.home_continue_watching_watched
 import nuvio.composeapp.generated.resources.media_movie
@@ -86,6 +87,9 @@ internal fun ActiveDownloadRow(
                         maxLines = 3,
                     )
                 }
+                DownloadStatus.Queued -> StatusText(
+                    text = stringResource(Res.string.downloads_status_queued),
+                )
                 else -> StatusText(text = activeStatusText(item, speedBytesPerSecond))
             }
         },
@@ -290,11 +294,23 @@ private fun TransferButton(
                     )
                 }
                 Icon(
-                    imageVector = if (isDownloading) Icons.Rounded.Pause else Icons.Rounded.Download,
+                    imageVector = if (isDownloading || item.status == DownloadStatus.Queued) {
+                        Icons.Rounded.Pause
+                    } else {
+                        Icons.Rounded.Download
+                    },
                     contentDescription = stringResource(
-                        if (isDownloading) Res.string.compose_action_pause else Res.string.action_resume,
+                        if (isDownloading || item.status == DownloadStatus.Queued) {
+                            Res.string.compose_action_pause
+                        } else {
+                            Res.string.action_resume
+                        },
                     ),
-                    tint = tokens.colors.textPrimary,
+                    tint = if (item.status == DownloadStatus.Queued) {
+                        tokens.colors.textMuted
+                    } else {
+                        tokens.colors.textPrimary
+                    },
                     modifier = Modifier.size(NuvioTokens.Icon.sm),
                 )
             }

@@ -37,6 +37,7 @@ import nuvio.composeapp.generated.resources.action_resume
 import nuvio.composeapp.generated.resources.action_retry
 import nuvio.composeapp.generated.resources.compose_action_pause
 import nuvio.composeapp.generated.resources.cw_action_go_to_details
+import nuvio.composeapp.generated.resources.downloads_start_now
 import org.jetbrains.compose.resources.stringResource
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -47,6 +48,7 @@ internal fun DownloadActionSheet(
     onDismiss: () -> Unit,
     onPlay: () -> Unit,
     onToggleTransfer: () -> Unit,
+    onStartNow: (() -> Unit)? = null,
     onOpenDetails: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -90,6 +92,20 @@ internal fun DownloadActionSheet(
                     title = stringResource(Res.string.compose_action_pause),
                     onClick = { dismissAfter(onToggleTransfer) },
                 )
+                DownloadStatus.Queued -> {
+                    if (onStartNow != null) {
+                        NuvioBottomSheetActionRow(
+                            icon = Icons.Rounded.PlayArrow,
+                            title = stringResource(Res.string.downloads_start_now),
+                            onClick = { dismissAfter(onStartNow) },
+                        )
+                    }
+                    NuvioBottomSheetActionRow(
+                        icon = Icons.Rounded.Pause,
+                        title = stringResource(Res.string.compose_action_pause),
+                        onClick = { dismissAfter(onToggleTransfer) },
+                    )
+                }
                 DownloadStatus.Paused -> NuvioBottomSheetActionRow(
                     icon = Icons.Rounded.Download,
                     title = stringResource(Res.string.action_resume),

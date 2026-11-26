@@ -2573,4 +2573,26 @@
     <string name="downloads_stop_detail_connectivity">red desconectada (%1$s)</string>
     <string name="downloads_stop_detail_device_state">restricción térmica, de memoria o inactividad del dispositivo (%1$s)</string>
     <string name="downloads_stop_detail_preempt">interrumpida por prioridad del sistema (%1$s)</string>
+    <string name="downloads_enqueue_queued">Agregada a la cola de descargas</string>
+    <string name="downloads_status_queued">En cola</string>
+    <string name="downloads_live_queued">En cola %1$s</string>
+    <string name="downloads_start_now">Iniciar ahora</string>
+    <string name="streams_download_season_episodes">Descargar capítulos de esta fuente</string>
+    <string name="downloads_season_pack_title">Temporada %1$d • %2$s</string>
+    <string name="downloads_season_pack_scanning">Buscando capítulos en esta fuente (%1$d / %2$d)…</string>
+    <string name="downloads_season_pack_found_summary">%1$d de %2$d capítulos encontrados en esta fuente</string>
+    <string name="downloads_season_pack_select_all">Seleccionar todos (%1$d)</string>
+    <string name="downloads_season_pack_deselect_all">Deseleccionar todos</string>
+    <string name="downloads_season_pack_single_only">Solo este capítulo coincide con este torrent o fuente. No parece incluir otros capítulos de la temporada.</string>
+    <string name="downloads_season_pack_load_failed">No se pudo cargar la lista de capítulos de la temporada</string>
+    <string name="downloads_season_pack_download_button">Descargar (%1$d)</string>
+    <string name="downloads_season_pack_status_available">Disponible en esta fuente</string>
+    <string name="downloads_season_pack_status_checking">Verificando fuente…</string>
+    <string name="downloads_season_pack_status_missing">No está en esta fuente</string>
+    <string name="downloads_season_pack_status_completed">Ya descargado</string>
+    <string name="downloads_season_pack_status_in_progress">Ya está en Descargas</string>
+    <string name="downloads_season_pack_batch_started">Descargando %1$d, en cola %2$d</string>
+    <string name="downloads_season_pack_batch_all_queued">%1$d capítulo(s) en cola</string>
+    <string name="downloads_season_pack_batch_partial">Encolados %1$d de %2$d (%3$d fallaron al resolver)</string>
+    <string name="downloads_season_pack_batch_failed">No se pudieron preparar los capítulos elegidos</string>
 </resources>

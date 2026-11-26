@@ -6,6 +6,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.downloads_enqueue_missing_url
+import nuvio.composeapp.generated.resources.downloads_enqueue_queued
 import nuvio.composeapp.generated.resources.downloads_enqueue_replaced
 import nuvio.composeapp.generated.resources.downloads_enqueue_started
 import nuvio.composeapp.generated.resources.downloads_enqueue_unsupported_format
@@ -13,6 +14,7 @@ import org.jetbrains.compose.resources.getString
 
 @Serializable
 enum class DownloadStatus {
+    Queued,
     Downloading,
     Paused,
     Completed,
@@ -97,6 +99,7 @@ data class DownloadsUiState(
 
 enum class DownloadEnqueueResult {
     Started,
+    Queued,
     Replaced,
     MissingUrl,
     UnsupportedFormat;
@@ -104,6 +107,7 @@ enum class DownloadEnqueueResult {
     fun toastMessage(): String = runBlocking {
         when (this@DownloadEnqueueResult) {
             Started -> getString(Res.string.downloads_enqueue_started)
+            Queued -> getString(Res.string.downloads_enqueue_queued)
             Replaced -> getString(Res.string.downloads_enqueue_replaced)
             MissingUrl -> getString(Res.string.downloads_enqueue_missing_url)
             UnsupportedFormat -> getString(Res.string.downloads_enqueue_unsupported_format)

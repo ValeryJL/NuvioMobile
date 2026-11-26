@@ -30,6 +30,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Download
@@ -72,6 +73,7 @@ import com.nuvio.app.core.ui.dismissNuvioBottomSheet
 import com.nuvio.app.core.ui.featherArtwork
 import com.nuvio.app.core.ui.rememberArtworkBackdrop
 import com.nuvio.app.features.downloads.DownloadsRepository
+import com.nuvio.app.features.downloads.SeasonPackDownloadResolver
 import com.nuvio.app.features.details.MetaScreenSettingsRepository
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -98,6 +100,7 @@ import com.nuvio.app.navigation.LocalUseNativeNavigation
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 import nuvio.composeapp.generated.resources.*
+import org.jetbrains.compose.resources.getString
 import org.jetbrains.compose.resources.stringResource
 import com.nuvio.app.core.i18n.localizedEpisodeTitle
 
@@ -173,6 +176,9 @@ fun StreamsScreen(
     val noDirectStreamLinkText = stringResource(Res.string.streams_no_direct_link)
     var streamActionsTarget by remember(videoId) { mutableStateOf<StreamItem?>(null) }
     var pendingP2pDownloadStream by remember(videoId) { mutableStateOf<StreamItem?>(null) }
+    var pendingP2pOpensSeasonPack by remember(videoId) { mutableStateOf(false) }
+    var seasonPackAnchorStream by remember(videoId) { mutableStateOf<StreamItem?>(null) }
+    var isEnqueuingSeasonPack by remember(videoId) { mutableStateOf(false) }
     val downloadScope = rememberCoroutineScope()
     fun enqueueStreamDownload(target: StreamItem) {
         val result = DownloadsRepository.enqueueFromStream(
@@ -336,6 +342,11 @@ fun StreamsScreen(
             canDownload = streamActionsTarget?.isSupportedDownload(
                 debridEnabled = debridSettings.canResolvePlayableLinks,
             ) == true,
+            canDownloadSeasonPack = SeasonPackDownloadResolver.supportsSeasonPackLookup(
+                stream = streamActionsTarget,
+                isEpisode = isEpisode,
+                debridEnabled = debridSettings.canResolvePlayableLinks,
+            ),
             onDismiss = { streamActionsTarget = null },
             onCopyLink = { stream ->
                 val directUrl = stream.playableDirectUrl ?: stream.externalOpenUrl
@@ -396,9 +407,21 @@ fun StreamsScreen(
                         }
                     }
                 } else if (stream.isSupportedTorrentDownload() && !p2pSettings.p2pEnabled) {
+                    pendingP2pOpensSeasonPack = false
                     pendingP2pDownloadStream = stream
                 } else {
                     enqueueStreamDownload(stream)
+                }
+            },
+            onDownloadSeasonPack = { stream ->
+                if (!DirectDebridPlaybackResolver.shouldResolveToPlayableStream(stream) &&
+                    stream.isSupportedTorrentDownload() &&
+                    !p2pSettings.p2pEnabled
+                ) {
+                    pendingP2pOpensSeasonPack = true
+                    pendingP2pDownloadStream = stream
+                } else {
+                    seasonPackAnchorStream = stream
                 }
             },
             onOpen = { stream, openExternally ->
@@ -411,15 +434,82 @@ fun StreamsScreen(
             },
         )
 
+        SeasonPackDownloadDialog(
+            anchorStream = seasonPackAnchorStream,
+            type = type,
+            parentMetaId = parentMetaId,
+            parentMetaType = parentMetaType,
+            currentVideoId = videoId,
+            seasonNumber = seasonNumber,
+            episodeNumber = episodeNumber,
+            episodeTitle = episodeTitle,
+            episodeThumbnail = episodeThumbnail,
+            isSubmitting = isEnqueuingSeasonPack,
+            onConfirm = { selections ->
+                if (isEnqueuingSeasonPack) return@SeasonPackDownloadDialog
+                isEnqueuingSeasonPack = true
+                downloadScope.launch {
+                    try {
+                        val summary = SeasonPackDownloadResolver.resolveAndEnqueueSelections(
+                            contentType = type,
+                            parentMetaId = parentMetaId,
+                            parentMetaType = parentMetaType,
+                            title = title,
+                            logo = logo,
+                            poster = poster,
+                            background = background,
+                            selections = selections,
+                        )
+                        val totalEnqueued = summary.startedCount + summary.queuedCount
+                        val toastText = when {
+                            totalEnqueued == 0 -> getString(Res.string.downloads_season_pack_batch_failed)
+                            summary.failedCount > 0 -> getString(
+                                Res.string.downloads_season_pack_batch_partial,
+                                totalEnqueued,
+                                selections.size,
+                                summary.failedCount,
+                            )
+                            summary.startedCount > 0 && summary.queuedCount > 0 -> getString(
+                                Res.string.downloads_season_pack_batch_started,
+                                summary.startedCount,
+                                summary.queuedCount,
+                            )
+                            summary.queuedCount > 0 -> getString(
+                                Res.string.downloads_season_pack_batch_all_queued,
+                                summary.queuedCount,
+                            )
+                            else -> getString(Res.string.downloads_enqueue_started)
+                        }
+                        NuvioToastController.show(toastText)
+                        seasonPackAnchorStream = null
+                    } finally {
+                        isEnqueuingSeasonPack = false
+                    }
+                }
+            },
+            onDismiss = {
+                if (!isEnqueuingSeasonPack) {
+                    seasonPackAnchorStream = null
+                }
+            },
+        )
+
         pendingP2pDownloadStream?.let { pendingStream ->
             P2pConsentDialog(
                 onEnableP2p = {
                     P2pSettingsRepository.setP2pEnabled(true)
+                    val openSeasonPack = pendingP2pOpensSeasonPack
                     pendingP2pDownloadStream = null
-                    enqueueStreamDownload(pendingStream)
+                    pendingP2pOpensSeasonPack = false
+                    if (openSeasonPack) {
+                        seasonPackAnchorStream = pendingStream
+                    } else {
+                        enqueueStreamDownload(pendingStream)
+                    }
                 },
                 onDismiss = {
                     pendingP2pDownloadStream = null
+                    pendingP2pOpensSeasonPack = false
                 },
             )
         }
@@ -991,9 +1081,11 @@ private fun StreamActionsSheet(
     stream: StreamItem?,
     externalPlayerEnabled: Boolean,
     canDownload: Boolean,
+    canDownloadSeasonPack: Boolean,
     onDismiss: () -> Unit,
     onCopyLink: (StreamItem) -> Unit,
     onDownload: (StreamItem) -> Unit,
+    onDownloadSeasonPack: (StreamItem) -> Unit,
     onOpen: (StreamItem, openExternally: Boolean) -> Unit,
 ) {
     if (stream == null) return
@@ -1079,6 +1171,18 @@ private fun StreamActionsSheet(
                         }
                     },
                 )
+                if (canDownloadSeasonPack) {
+                    NuvioBottomSheetActionRow(
+                        icon = Icons.AutoMirrored.Filled.PlaylistPlay,
+                        title = stringResource(Res.string.streams_download_season_episodes),
+                        onClick = {
+                            onDownloadSeasonPack(stream)
+                            coroutineScope.launch {
+                                dismissNuvioBottomSheet(sheetState = sheetState, onDismiss = onDismiss)
+                            }
+                        },
+                    )
+                }
             }
         }
     }

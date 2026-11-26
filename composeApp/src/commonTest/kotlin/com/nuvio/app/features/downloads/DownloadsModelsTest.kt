@@ -325,5 +325,9 @@ class DownloadsModelsTest {
             .replace("\"pauseReason\":null,", "")
         val decodedLegacy = json.decodeFromString<DownloadItem>(legacyWithoutPauseReason)
         assertNull(decodedLegacy.pauseReason)
+
+        val queued = item.copy(id = "d-queued", status = DownloadStatus.Queued, pauseReason = null)
+        val decodedQueued = json.decodeFromString<DownloadItem>(json.encodeToString(queued))
+        assertEquals(DownloadStatus.Queued, decodedQueued.status)
     }
 }

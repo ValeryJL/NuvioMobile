@@ -130,10 +130,7 @@ object DownloadsRepository {
         ensureLoaded()
 
         val now = DownloadsClock.nowEpochMs()
-        val downloadId = nextDownloadId(now)
-        val built = buildDownloadItemFromStream(
-            downloadId = downloadId,
-            nowEpochMs = now,
+        val request = StreamBatchDownloadRequest(
             contentType = contentType,
             videoId = videoId,
             parentMetaId = parentMetaId,
@@ -148,79 +145,128 @@ object DownloadsRepository {
             episodeThumbnail = episodeThumbnail,
             stream = stream,
         )
-        val item = when (built) {
-            is StreamDownloadBuildResult.Failure -> return built.result
-            is StreamDownloadBuildResult.Success -> built.item
-        }
-
-        val logicalKey = buildLogicalKey(
-            parentMetaId = parentMetaId,
-            seasonNumber = seasonNumber,
-            episodeNumber = episodeNumber,
-        )
-
-        var replacedExisting = false
         val currentItems = _uiState.value.items.toMutableList()
-        val existing = currentItems.firstOrNull { it.logicalContentKey == logicalKey }
-        if (existing != null) {
-            replacedExisting = true
-            activeHandles.remove(existing.id)?.cancel()
-            DownloadsPlatformDownloader.removeFile(playableLocalFileUri(existing) ?: existing.localFileUri)
-            DownloadsPlatformDownloader.removePartialFile(existing.fileName)
-            currentItems.removeAll { it.id == existing.id }
+        val prepared = when (val result = prepareSingleUpsert(request, now, currentItems)) {
+            is PreparedUpsert.Failure -> return result.failure
+            is PreparedUpsert.Ready -> result
         }
 
-        currentItems.add(0, item)
+        currentItems.add(0, prepared.item)
         publish(currentItems)
         persist()
-        startDownload(item)
-
-        return if (replacedExisting) {
-            DownloadEnqueueResult.Replaced
-        } else {
-            DownloadEnqueueResult.Started
+        if (prepared.item.status == DownloadStatus.Downloading) {
+            startDownload(prepared.item)
         }
+
+        return when {
+            prepared.replacedExisting -> DownloadEnqueueResult.Replaced
+            prepared.item.status == DownloadStatus.Queued -> DownloadEnqueueResult.Queued
+            else -> DownloadEnqueueResult.Started
+        }
+    }
+
+    internal fun enqueueBatchFromStreams(
+        requests: List<StreamBatchDownloadRequest>,
+    ): BatchDownloadEnqueueSummary {
+        ensureLoaded()
+        if (requests.isEmpty()) return BatchDownloadEnqueueSummary(0, 0, 0)
+
+        val baseNow = DownloadsClock.nowEpochMs()
+        val currentItems = _uiState.value.items.toMutableList()
+        val batchItems = mutableListOf<DownloadItem>()
+        val toStart = mutableListOf<DownloadItem>()
+        var failedCount = 0
+
+        requests.forEachIndexed { index, request ->
+            val createdAt = baseNow + index
+            when (val result = prepareSingleUpsert(request, createdAt, currentItems, pendingBatch = batchItems)) {
+                is PreparedUpsert.Failure -> failedCount += 1
+                is PreparedUpsert.Ready -> {
+                    batchItems += result.item
+                    if (result.item.status == DownloadStatus.Downloading) {
+                        toStart += result.item
+                    }
+                }
+            }
+        }
+
+        if (batchItems.isNotEmpty()) {
+            currentItems.addAll(0, batchItems)
+            publish(currentItems)
+            persist()
+            toStart.forEach(::startDownload)
+        }
+
+        return BatchDownloadEnqueueSummary(
+            startedCount = toStart.size,
+            queuedCount = (batchItems.size - toStart.size).coerceAtLeast(0),
+            failedCount = failedCount,
+        )
     }
 
     fun pauseDownload(downloadId: String, reason: String = DownloadPauseReasons.USER_APP) {
         ensureLoaded()
-        val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
-        if (item.status != DownloadStatus.Downloading) return
-
-        activeHandles.remove(downloadId)?.cancel(reason)
-        mutateItem(downloadId) { current ->
-            current.copy(
-                status = DownloadStatus.Paused,
-                updatedAtEpochMs = DownloadsClock.nowEpochMs(),
-                errorMessage = null,
-                pauseReason = reason,
-            )
+        if (pauseSingleItem(downloadId, reason)) {
+            promoteQueuedDownloads()
         }
     }
 
     fun pauseActiveDownloads(reason: String = DownloadPauseReasons.USER_APP) {
         ensureLoaded()
+        // Pause queued items first so canceling active handles never triggers promotion mid-loop.
+        _uiState.value.items
+            .filter { it.status == DownloadStatus.Queued }
+            .map { it.id }
+            .forEach { pauseSingleItem(it, reason) }
         _uiState.value.items
             .filter { it.status == DownloadStatus.Downloading }
             .map { it.id }
-            .forEach { pauseDownload(it, reason) }
+            .forEach { pauseSingleItem(it, reason) }
     }
 
     fun resumePausedDownloads() {
         ensureLoaded()
-        _uiState.value.items
+        val paused = _uiState.value.items
             .filter { it.status == DownloadStatus.Paused }
-            .map { it.id }
-            .forEach(::resumeDownload)
+            .sortedWith(queueOrderComparator)
+        if (paused.isEmpty()) return
+
+        val now = DownloadsClock.nowEpochMs()
+        val working = _uiState.value.items.toMutableList()
+        val toStart = mutableListOf<DownloadItem>()
+
+        paused.forEach { item ->
+            val index = working.indexOfFirst { it.id == item.id }
+            if (index < 0) return@forEach
+            val canStart = canStartImmediately(item, working)
+            val updated = item.copy(
+                status = if (canStart) DownloadStatus.Downloading else DownloadStatus.Queued,
+                errorMessage = null,
+                pauseReason = null,
+                localFileUri = null,
+                updatedAtEpochMs = now,
+            )
+            working[index] = updated
+            if (canStart) toStart += updated
+        }
+
+        publish(working)
+        persist()
+        toStart.forEach(::startDownload)
     }
 
     fun resumeDownload(downloadId: String) {
         ensureLoaded()
         val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
-        if (item.status != DownloadStatus.Paused && item.status != DownloadStatus.Failed) return
+        if (item.status != DownloadStatus.Paused &&
+            item.status != DownloadStatus.Failed &&
+            item.status != DownloadStatus.Queued
+        ) return
 
+        val canStart = canStartImmediately(item, _uiState.value.items)
+        val nextStatus = if (canStart) DownloadStatus.Downloading else DownloadStatus.Queued
         val reset = item.copy(
-            status = DownloadStatus.Downloading,
+            status = nextStatus,
             errorMessage = null,
             pauseReason = null,
             localFileUri = null,
@@ -229,7 +275,46 @@ object DownloadsRepository {
 
         replaceItem(reset)
         persist()
-        startDownload(reset)
+        if (nextStatus == DownloadStatus.Downloading) {
+            startDownload(reset)
+        }
+    }
+
+    fun startQueuedDownloadNow(downloadId: String) {
+        ensureLoaded()
+        val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
+        if (item.status != DownloadStatus.Queued) return
+
+        val sameHashActive = !item.torrentInfoHash.isNullOrBlank() &&
+            _uiState.value.items.any {
+                it.status == DownloadStatus.Downloading &&
+                    it.id != item.id &&
+                    it.torrentInfoHash == item.torrentInfoHash
+            }
+        if (sameHashActive) {
+            // Shared-hash torrent transfers are serialized; move this episode to the head of the queue.
+            val earliestTimestamp = _uiState.value.items
+                .filter { it.status == DownloadStatus.Queued }
+                .minOfOrNull { it.createdAtEpochMs } ?: DownloadsClock.nowEpochMs()
+            mutateItem(item.id) { current ->
+                current.copy(
+                    createdAtEpochMs = (earliestTimestamp - 1L).coerceAtLeast(0L),
+                    updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+                )
+            }
+            return
+        }
+
+        val started = item.copy(
+            status = DownloadStatus.Downloading,
+            errorMessage = null,
+            pauseReason = null,
+            localFileUri = null,
+            updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+        )
+        replaceItem(started)
+        persist()
+        startDownload(started)
     }
 
     fun retryDownload(downloadId: String) {
@@ -256,6 +341,109 @@ object DownloadsRepository {
 
         publish(_uiState.value.items.filterNot { it.id == downloadId })
         persist()
+        if (item.status == DownloadStatus.Downloading) {
+            promoteQueuedDownloads()
+        }
+    }
+
+    private fun pauseSingleItem(downloadId: String, reason: String): Boolean {
+        val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return false
+        if (item.status != DownloadStatus.Downloading && item.status != DownloadStatus.Queued) return false
+
+        val wasDownloading = item.status == DownloadStatus.Downloading
+        activeHandles.remove(downloadId)?.cancel(reason)
+        mutateItem(downloadId) { current ->
+            current.copy(
+                status = DownloadStatus.Paused,
+                updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+                errorMessage = null,
+                pauseReason = reason,
+            )
+        }
+        return wasDownloading
+    }
+
+    private fun prepareSingleUpsert(
+        request: StreamBatchDownloadRequest,
+        now: Long,
+        currentItems: MutableList<DownloadItem>,
+        pendingBatch: MutableList<DownloadItem> = mutableListOf(),
+    ): PreparedUpsert {
+        val downloadId = nextDownloadId(now)
+        val built = buildDownloadItemFromStream(
+            downloadId = downloadId,
+            nowEpochMs = now,
+            contentType = request.contentType,
+            videoId = request.videoId,
+            parentMetaId = request.parentMetaId,
+            parentMetaType = request.parentMetaType,
+            title = request.title,
+            logo = request.logo,
+            poster = request.poster,
+            background = request.background,
+            seasonNumber = request.seasonNumber,
+            episodeNumber = request.episodeNumber,
+            episodeTitle = request.episodeTitle,
+            episodeThumbnail = request.episodeThumbnail,
+            stream = request.stream,
+        )
+        val rawItem = when (built) {
+            is StreamDownloadBuildResult.Failure -> return PreparedUpsert.Failure(built.result)
+            is StreamDownloadBuildResult.Success -> built.item
+        }
+
+        val logicalKey = buildLogicalKey(
+            parentMetaId = request.parentMetaId,
+            seasonNumber = request.seasonNumber,
+            episodeNumber = request.episodeNumber,
+        )
+
+        var replacedExisting = false
+        val existing = currentItems.firstOrNull { it.logicalContentKey == logicalKey }
+        if (existing != null) {
+            replacedExisting = true
+            activeHandles.remove(existing.id)?.cancel()
+            DownloadsPlatformDownloader.removeFile(playableLocalFileUri(existing) ?: existing.localFileUri)
+            DownloadsPlatformDownloader.removePartialFile(existing.fileName)
+            currentItems.removeAll { it.id == existing.id }
+        }
+        pendingBatch.removeAll { it.logicalContentKey == logicalKey }
+
+        val canStart = canStartImmediately(rawItem, currentItems + pendingBatch)
+        val item = rawItem.copy(
+            status = if (canStart) DownloadStatus.Downloading else DownloadStatus.Queued,
+        )
+        return PreparedUpsert.Ready(item = item, replacedExisting = replacedExisting)
+    }
+
+    private fun canStartImmediately(candidate: DownloadItem, items: List<DownloadItem>): Boolean {
+        val active = items.filter { it.status == DownloadStatus.Downloading && it.id != candidate.id }
+        if (active.size >= MAX_CONCURRENT_DOWNLOADS) return false
+        val hash = candidate.torrentInfoHash
+        if (!hash.isNullOrBlank() && active.any { it.torrentInfoHash == hash }) return false
+        return true
+    }
+
+    private fun promoteQueuedDownloads() {
+        while (true) {
+            val currentItems = _uiState.value.items
+            val next = currentItems
+                .filter { it.status == DownloadStatus.Queued }
+                .sortedWith(queueOrderComparator)
+                .firstOrNull { canStartImmediately(it, currentItems) }
+                ?: break
+
+            val promoted = next.copy(
+                status = DownloadStatus.Downloading,
+                errorMessage = null,
+                pauseReason = null,
+                localFileUri = null,
+                updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+            )
+            replaceItem(promoted)
+            persist()
+            startDownload(promoted)
+        }
     }
 
     private fun loadFromDisk() {
@@ -287,6 +475,7 @@ object DownloadsRepository {
         }
         normalized.filter { it.status == DownloadStatus.Downloading && it.id !in activeHandles }
             .forEach(::startDownload)
+        promoteQueuedDownloads()
     }
 
     private fun startDownload(item: DownloadItem) {
@@ -327,6 +516,7 @@ object DownloadsRepository {
                         updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                     )
                 }
+                promoteQueuedDownloads()
             },
             onFailure = { message ->
                 activeHandles.remove(item.id)
@@ -342,6 +532,7 @@ object DownloadsRepository {
                         )
                     }
                 }
+                promoteQueuedDownloads()
             },
             onPaused = { reason ->
                 activeHandles.remove(item.id)
@@ -353,6 +544,7 @@ object DownloadsRepository {
                         pauseReason = reason ?: current.pauseReason,
                     )
                 }
+                promoteQueuedDownloads()
             },
         )
 
@@ -502,6 +694,43 @@ private fun buildLogicalKey(
 } else {
     "${parentMetaId.trim()}|movie"
 }
+
+internal data class StreamBatchDownloadRequest(
+    val contentType: String,
+    val videoId: String,
+    val parentMetaId: String,
+    val parentMetaType: String,
+    val title: String,
+    val logo: String?,
+    val poster: String?,
+    val background: String?,
+    val seasonNumber: Int?,
+    val episodeNumber: Int?,
+    val episodeTitle: String?,
+    val episodeThumbnail: String?,
+    val stream: StreamItem,
+)
+
+internal data class BatchDownloadEnqueueSummary(
+    val startedCount: Int,
+    val queuedCount: Int,
+    val failedCount: Int,
+)
+
+private sealed interface PreparedUpsert {
+    data class Ready(val item: DownloadItem, val replacedExisting: Boolean) : PreparedUpsert
+    data class Failure(val failure: DownloadEnqueueResult) : PreparedUpsert
+}
+
+private const val MAX_CONCURRENT_DOWNLOADS = 2
+
+private val queueOrderComparator: Comparator<DownloadItem> =
+    compareBy<DownloadItem>(
+        { it.createdAtEpochMs },
+        { it.seasonNumber ?: Int.MAX_VALUE },
+        { it.episodeNumber ?: Int.MAX_VALUE },
+        { it.id },
+    )
 
 internal sealed interface StreamDownloadBuildResult {
     data class Success(val item: DownloadItem) : StreamDownloadBuildResult

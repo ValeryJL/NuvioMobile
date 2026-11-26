@@ -84,7 +84,7 @@ internal actual object DownloadsLiveStatusPlatform {
         val context = appContext ?: return
         if (!canPostNotifications(context)) return
         val manager = NotificationManagerCompat.from(context)
-        if (item.status == DownloadStatus.Completed) {
+        if (item.status == DownloadStatus.Completed || item.status == DownloadStatus.Queued) {
             removeNotification(item.id)
         } else {
             val active = item.status == DownloadStatus.Downloading
@@ -151,6 +151,7 @@ internal actual object DownloadsLiveStatusPlatform {
                 }
             }
 
+            DownloadStatus.Queued,
             DownloadStatus.Paused,
             DownloadStatus.Failed,
             DownloadStatus.Completed,
@@ -195,6 +196,7 @@ internal actual object DownloadsLiveStatusPlatform {
                 }
             }
 
+            DownloadStatus.Queued -> runBlocking { getString(Res.string.downloads_live_queued, detail) }
             DownloadStatus.Paused -> runBlocking {
                 val base = getString(Res.string.downloads_live_paused, detail)
                 val diagnostic = item.pauseReason?.let { resolvePauseDiagnostic(it, includePrefix = false) }
