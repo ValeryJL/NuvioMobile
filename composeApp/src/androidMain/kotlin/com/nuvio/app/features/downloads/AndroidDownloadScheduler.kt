@@ -96,7 +96,7 @@ internal class AndroidDownloadScheduler(
             .build()
 
     @RequiresApi(34)
-    private fun jobScheduler(): JobScheduler =
+    internal fun jobScheduler(): JobScheduler =
         context.getSystemService(JobScheduler::class.java).forNamespace(JOB_NAMESPACE)
 
     fun restore(item: DownloadItem): DownloadItem {

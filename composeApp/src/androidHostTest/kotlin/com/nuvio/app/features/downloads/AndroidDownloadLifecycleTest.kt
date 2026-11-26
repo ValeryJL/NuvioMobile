@@ -1,7 +1,6 @@
 package com.nuvio.app.features.downloads
 
 import android.app.job.JobInfo
-import android.app.job.JobScheduler
 import org.robolectric.RuntimeEnvironment
 import java.io.File
 import java.io.IOException
@@ -140,12 +139,13 @@ class AndroidDownloadLifecycleTest {
         val context = RuntimeEnvironment.getApplication()
         val scheduler = AndroidDownloadScheduler(context)
         val existing = scheduler.store.begin(downloadItem().copy(fileName = "requeue.mkv"))
-        val jobScheduler = context.getSystemService(JobScheduler::class.java)
+        val jobScheduler = scheduler.jobScheduler()
         assertEquals(null, jobScheduler.getPendingJob(existing.jobId))
 
         val transfer = scheduler.enqueue(existing.item)
 
         assertEquals(existing.generation, transfer.generation)
+        assertEquals(DownloadStatus.Downloading, transfer.item.status)
         assertNotNull(jobScheduler.getPendingJob(transfer.jobId))
     }
 
