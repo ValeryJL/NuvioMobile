@@ -308,6 +308,8 @@ class DownloadsModelsTest {
             parentMetaId = "tt999",
             parentMetaType = "movie",
             title = "Paused Movie",
+            streamTitle = "1080p",
+            providerName = "TestAddon",
             sourceUrl = "https://example.com/video.mp4",
             fileName = "paused.mp4",
             status = DownloadStatus.Paused,
