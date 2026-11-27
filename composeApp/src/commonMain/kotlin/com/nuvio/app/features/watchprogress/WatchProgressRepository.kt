@@ -3,6 +3,8 @@ package com.nuvio.app.features.watchprogress
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
+import com.nuvio.app.core.auth.isInvalidSessionError
+import com.nuvio.app.core.auth.isJwtExpiredError
 import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
 import com.nuvio.app.features.addons.AddonManifest
 import com.nuvio.app.features.addons.AddonRepository
@@ -21,6 +23,7 @@ import com.nuvio.app.features.tracking.TrackingSettingsRepository
 import com.nuvio.app.features.tracking.WatchProgressSource
 import com.nuvio.app.features.tracking.effectiveWatchProgressSource
 import com.nuvio.app.features.tracking.providerId
+import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.watching.application.WatchingActions
 import com.nuvio.app.features.watching.sync.ProgressDeltaEvent
 import com.nuvio.app.features.watching.sync.ProgressSyncRecord
@@ -234,6 +237,20 @@ internal class RemoteProgressWriteDeduplicator(
             sentAtEpochMs = nowEpochMs,
         )
         true
+    }
+
+    fun forget(
+        profileId: Int,
+        progressKey: String,
+    ) {
+        synchronized(lock) {
+            recentWrites.remove(
+                RemoteProgressWriteKey(
+                    profileId = profileId,
+                    progressKey = progressKey,
+                ),
+            )
+        }
     }
 
     fun clear() {
@@ -591,6 +608,12 @@ object WatchProgressRepository {
         profileId: Int,
         operationGeneration: Long,
     ) {
+        pushDirtyProgressToServer(
+            profileId = profileId,
+            operationGeneration = operationGeneration,
+        )
+        if (!isActiveOperation(profileId, operationGeneration)) return
+
         val cursorBeforeSnapshot = try {
             syncAdapter.getDeltaCursor(profileId)
         } catch (error: CancellationException) {
@@ -619,6 +642,11 @@ object WatchProgressRepository {
         profileId: Int,
         operationGeneration: Long,
     ) {
+        if (!isActiveOperation(profileId, operationGeneration)) return
+        pushDirtyProgressToServer(
+            profileId = profileId,
+            operationGeneration = operationGeneration,
+        )
         if (!isActiveOperation(profileId, operationGeneration)) return
         log.d {
             "Watch progress delta sync start: profile=$profileId entries=${localEntryCount()} " +
@@ -1211,6 +1239,12 @@ object WatchProgressRepository {
                 syncScope.launch {
                     removeProviderProgress(provider, entriesToRemove, "clear playback progress")
                 }
+                if (shouldMirrorTraktWritesToNuvio(provider.providerId)) {
+                    pushDeleteToServer(
+                        entries = locallyRemovedEntries.ifEmpty { entriesToRemove },
+                        allowExternalMirror = true,
+                    )
+                }
             }
             return
         }
@@ -1253,6 +1287,12 @@ object WatchProgressRepository {
             publish()
             syncScope.launch {
                 removeProviderProgress(provider, entriesToRemove, "remove playback progress")
+            }
+            if (shouldMirrorTraktWritesToNuvio(provider.providerId)) {
+                pushDeleteToServer(
+                    entries = locallyRemovedEntries.ifEmpty { entriesToRemove },
+                    allowExternalMirror = true,
+                )
             }
             return
         }
@@ -1358,57 +1398,58 @@ object WatchProgressRepository {
             isCompleted = isCompleted,
         ).normalizedCompletion()
 
+        val shouldMirrorToNuvio = progressProvider == null ||
+            shouldMirrorTraktWritesToNuvio(progressProvider.providerId)
+
         if (targetProfileId != currentProfileId || ProfileRepository.activeProfileId != targetProfileId) {
             val resolvedEntry = resolveStoredProfileProgressIdentity(
                 profileId = targetProfileId,
                 entry = candidateEntry,
             )
-            if (
-                syncRemote &&
-                !remoteWriteDeduplicator.shouldSend(
-                    profileId = targetProfileId,
-                    entry = resolvedEntry,
-                    nowEpochMs = candidateEntry.lastUpdatedEpochMs,
-                )
-            ) {
-                return
-            }
             val entry = if (persist) {
                 upsertStoredProfileProgress(profileId = targetProfileId, entry = resolvedEntry)
             } else {
                 resolvedEntry
             }
-            if (syncRemote) {
+            if (
+                syncRemote &&
+                shouldMirrorToNuvio &&
+                remoteWriteDeduplicator.shouldSend(
+                    profileId = targetProfileId,
+                    entry = entry,
+                    nowEpochMs = candidateEntry.lastUpdatedEpochMs,
+                )
+            ) {
                 pushScrobbleToServer(entry = entry, profileId = targetProfileId)
             }
             return
         }
 
         val entry = localEntriesSnapshot().resolveIdentityForUpsert(candidateEntry)
-        if (
-            syncRemote &&
-            !remoteWriteDeduplicator.shouldSend(
-                profileId = targetProfileId,
-                entry = entry,
-                nowEpochMs = candidateEntry.lastUpdatedEpochMs,
-            )
-        ) {
-            return
-        }
 
         if (entry.parentMetaType.equals("series", ignoreCase = true)) {
             ContinueWatchingPreferencesRepository.removeDismissedNextUpKeysForContent(entry.parentMetaId)
         }
 
         upsertLocalEntry(entry)
-        markProgressDirty(entry)
+        if (shouldMirrorToNuvio) {
+            markProgressDirty(entry)
+        }
         progressProvider?.applyOptimisticProgress(entry)
         publish()
         if (persist) persist()
         if (entry.needsRemoteMetadataEnrichment() && !isMetadataEnrichmentBackedOff(entry)) {
             resolveRemoteMetadata()
         }
-        if (syncRemote) {
+        if (
+            syncRemote &&
+            shouldMirrorToNuvio &&
+            remoteWriteDeduplicator.shouldSend(
+                profileId = targetProfileId,
+                entry = entry,
+                nowEpochMs = candidateEntry.lastUpdatedEpochMs,
+            )
+        ) {
             pushScrobbleToServer(entry = entry, profileId = targetProfileId)
         }
         if (
@@ -1461,33 +1502,223 @@ object WatchProgressRepository {
         return storedEntries.resolveIdentityForUpsert(entry)
     }
 
+    private fun shouldMirrorTraktWritesToNuvio(providerId: TrackingProviderId?): Boolean {
+        if (providerId != TrackingProviderId.TRAKT) return false
+        TraktSettingsRepository.ensureLoaded()
+        return TraktSettingsRepository.uiState.value.mirrorTraktToNuvioSync
+    }
+
+    private fun hasAuthenticatedNuvioSyncAccount(): Boolean {
+        val authState = AuthRepository.state.value
+        return authState is AuthState.Authenticated && !authState.isAnonymous
+    }
+
     private fun pushScrobbleToServer(entry: WatchProgressEntry, profileId: Int) {
         if (ServerItemRef.isServerId(entry.parentMetaId)) return
+        val progressKey = entry.resolvedProgressKey()
         val operationGeneration = profileGeneration.takeIf { profileId == currentProfileId }
         accountScopeSnapshot().launch {
-            runCatching {
-                syncAdapter.push(profileId = profileId, entries = listOf(entry))
+            if (!hasAuthenticatedNuvioSyncAccount()) {
+                remoteWriteDeduplicator.forget(profileId = profileId, progressKey = progressKey)
+                return@launch
+            }
+            try {
+                pushToAdapterWithAuthRetry(
+                    profileId = profileId,
+                    entries = listOf(entry),
+                    source = "watch progress scrobble",
+                )
                 recordSuccessfulPush(
                     profileId = profileId,
                     operationGeneration = operationGeneration,
                     entries = listOf(entry),
                 )
-            }.onFailure { e ->
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // Allow immediate subsequent flushes/retries to send instead of being suppressed by dedupe.
+                remoteWriteDeduplicator.forget(profileId = profileId, progressKey = progressKey)
                 log.e(e) { "Failed to push watch progress scrobble" }
             }
         }
     }
 
-    private fun pushDeleteToServer(entries: Collection<WatchProgressEntry>) {
-        if (activeSource.providerId != null) return
-        val entries = entries.filterNot { ServerItemRef.isServerId(it.parentMetaId) }
+    private fun pushDeleteToServer(
+        entries: Collection<WatchProgressEntry>,
+        allowExternalMirror: Boolean = false,
+    ) {
+        if (activeSource.providerId != null && !allowExternalMirror) return
+        val filteredEntries = entries.filterNot { ServerItemRef.isServerId(it.parentMetaId) }
+        if (filteredEntries.isEmpty()) return
         val profileId = currentProfileId
         accountScopeSnapshot().launch {
-            runCatching {
-                if (entries.isEmpty()) return@runCatching
-                syncAdapter.delete(profileId = profileId, entries = entries)
-            }.onFailure { e ->
+            if (!hasAuthenticatedNuvioSyncAccount()) return@launch
+            try {
+                deleteFromAdapterWithAuthRetry(
+                    profileId = profileId,
+                    entries = filteredEntries,
+                    source = "watch progress delete",
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 log.e(e) { "Failed to push watch progress delete" }
+            }
+        }
+    }
+
+    private suspend fun pushToAdapterWithAuthRetry(
+        profileId: Int,
+        entries: Collection<WatchProgressEntry>,
+        source: String,
+    ) {
+        if (entries.isEmpty()) return
+        try {
+            syncAdapter.push(profileId = profileId, entries = entries)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            if (error.isJwtExpiredError() || error.isInvalidSessionError()) {
+                val signedOut = AuthRepository.signOutIfSessionInvalid(error, source)
+                if (!signedOut) {
+                    syncAdapter.push(profileId = profileId, entries = entries)
+                    return
+                }
+            }
+            throw error
+        }
+    }
+
+    private suspend fun deleteFromAdapterWithAuthRetry(
+        profileId: Int,
+        entries: Collection<WatchProgressEntry>,
+        source: String,
+    ) {
+        if (entries.isEmpty()) return
+        try {
+            syncAdapter.delete(profileId = profileId, entries = entries)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            if (error.isJwtExpiredError() || error.isInvalidSessionError()) {
+                val signedOut = AuthRepository.signOutIfSessionInvalid(error, source)
+                if (!signedOut) {
+                    syncAdapter.delete(profileId = profileId, entries = entries)
+                    return
+                }
+            }
+            throw error
+        }
+    }
+
+    private suspend fun pushDirtyProgressToServer(
+        profileId: Int,
+        operationGeneration: Long,
+    ) {
+        if (!hasAuthenticatedNuvioSyncAccount()) return
+        if (!isActiveOperation(profileId, operationGeneration)) return
+        val dirtyKeys = dirtyProgressKeysSnapshot()
+        if (dirtyKeys.isEmpty()) return
+
+        val dirtyEntries = localEntriesSnapshot().filter { entry ->
+            entry.resolvedProgressKey() in dirtyKeys && !ServerItemRef.isServerId(entry.parentMetaId)
+        }
+        if (dirtyEntries.isEmpty()) return
+
+        for (chunk in dirtyEntries.chunked(100)) {
+            if (!isActiveOperation(profileId, operationGeneration)) return
+            try {
+                pushToAdapterWithAuthRetry(
+                    profileId = profileId,
+                    entries = chunk,
+                    source = "watch progress dirty flush",
+                )
+                recordSuccessfulPush(
+                    profileId = profileId,
+                    operationGeneration = operationGeneration,
+                    entries = chunk,
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                log.w(error) { "Failed to flush ${chunk.size} dirty watch progress entries for profile $profileId" }
+                return
+            }
+        }
+    }
+
+    internal suspend fun flushDirtyProgressToServer(profileId: Int) {
+        ensureLoaded()
+        if (!hasAuthenticatedNuvioSyncAccount()) return
+        if (ProfileRepository.activeProfileId != profileId) return
+        if (currentProfileId != profileId) {
+            loadFromDisk(profileId)
+        }
+        val operationGeneration = activeOperationGeneration(profileId) ?: return
+        nuvioPullMutex.withLock {
+            pushDirtyProgressToServer(
+                profileId = profileId,
+                operationGeneration = operationGeneration,
+            )
+        }
+    }
+
+    internal suspend fun mirrorEntriesToNuvioSync(
+        profileId: Int,
+        computeUpdates: (existingNuvioEntries: List<WatchProgressEntry>) -> List<WatchProgressEntry>,
+    ) {
+        ensureLoaded()
+        if (!hasAuthenticatedNuvioSyncAccount()) return
+        if (ProfileRepository.activeProfileId != profileId) return
+        if (currentProfileId != profileId) {
+            loadFromDisk(profileId)
+        }
+        val operationGeneration = activeOperationGeneration(profileId) ?: return
+        nuvioPullMutex.withLock {
+            if (!isActiveOperation(profileId, operationGeneration)) return
+            if (!hasLoadedNuvioRemoteProgress) {
+                runCatching {
+                    pullNuvioSnapshotFromServer(
+                        profileId = profileId,
+                        operationGeneration = operationGeneration,
+                    )
+                }.onFailure { error ->
+                    if (error is CancellationException) throw error
+                    log.w(error) { "Unable to warm Nuvio Sync baseline before Trakt mirror for profile $profileId" }
+                }
+            }
+            if (!isActiveOperation(profileId, operationGeneration)) return
+            val existingLocal = localEntriesSnapshot()
+            val mirroredEntries = computeUpdates(existingLocal)
+                .map { candidate -> existingLocal.resolveIdentityForUpsert(candidate) }
+            if (mirroredEntries.isEmpty()) return
+
+            mirroredEntries.forEach { entry ->
+                upsertLocalEntry(entry)
+                markProgressDirty(entry)
+            }
+            publish()
+            persist()
+
+            for (chunk in mirroredEntries.chunked(100)) {
+                if (!isActiveOperation(profileId, operationGeneration)) return
+                try {
+                    pushToAdapterWithAuthRetry(
+                        profileId = profileId,
+                        entries = chunk,
+                        source = "trakt progress mirror",
+                    )
+                    recordSuccessfulPush(
+                        profileId = profileId,
+                        operationGeneration = operationGeneration,
+                        entries = chunk,
+                    )
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    log.w(error) { "Failed to push mirrored Trakt progress to Nuvio Sync for profile $profileId" }
+                    return
+                }
             }
         }
     }

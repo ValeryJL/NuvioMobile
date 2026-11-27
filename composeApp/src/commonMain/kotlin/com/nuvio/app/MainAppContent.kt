@@ -176,6 +176,8 @@ import com.nuvio.app.features.watched.WatchedRepository
 import com.nuvio.app.features.watching.application.WatchingActions
 import com.nuvio.app.features.watching.application.WatchingState
 import com.nuvio.app.features.watching.application.canMarkWatched
+import com.nuvio.app.features.trakt.TraktNuvioMirrorSync
+import com.nuvio.app.features.trakt.TraktProgressRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingItem
 import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepository
 import com.nuvio.app.features.watchprogress.ResumePromptRepository
@@ -599,8 +601,9 @@ internal fun MainAppContent(
                 val profileId = activeProfileIndex
                     ?: ProfileRepository.activeProfileId
                 val authenticatedState = authState as? AuthState.Authenticated
+                TraktProgressRepository.refreshIfActivityChangedAsync(minIntervalMs = 0L)
                 if (authenticatedState != null && !authenticatedState.isAnonymous) {
-                    SyncManager.requestForegroundPull(profileId = profileId)
+                    SyncManager.requestForegroundPull(profileId = profileId, force = true)
                     watchSourceReconnectPending = false
                 } else {
                     val result = WatchProgressSourceCoordinator.refreshActiveSource(
@@ -661,7 +664,10 @@ internal fun MainAppContent(
         val syncProfileId = activeProfileId?.takeIf {
             authenticatedState != null && !authenticatedState.isAnonymous
         }
-        syncProfileId?.let(SyncManager::pullAllForProfile)
+        syncProfileId?.let { profileId ->
+            SyncManager.pullAllForProfile(profileId)
+            TraktNuvioMirrorSync.onNuvioAuthenticatedAsync()
+        }
         try {
             AppForegroundMonitor.events().collect { visibility ->
                 when (visibility) {
@@ -670,6 +676,7 @@ internal fun MainAppContent(
                         DeviceSessionRegistration.registerIfAuthenticated()
                         MemberAccessRepository.refreshIfStale()
                         DownloadsRepository.requestActiveReconciliation()
+                        TraktProgressRepository.refreshIfActivityChangedAsync()
                         if (syncProfileId != null) {
                             SyncManager.startPeriodicNuvioSyncPull(syncProfileId)
                             SyncManager.requestForegroundPull(syncProfileId)

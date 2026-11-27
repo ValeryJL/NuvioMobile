@@ -43,4 +43,7 @@ object TrackingSettingsRepository {
 
     fun setRatingSource(source: TrackingProviderId?) =
         TraktSettingsRepository.setRatingSource(source)
+
+    fun setMirrorTraktToNuvioSync(enabled: Boolean) =
+        TraktSettingsRepository.setMirrorTraktToNuvioSync(enabled)
 }

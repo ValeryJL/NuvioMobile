@@ -140,10 +140,7 @@ fun HomeScreen(
         ContinueWatchingPreferencesRepository.ensureLoaded()
         WatchedRepository.ensureLoaded()
         WatchProgressRepository.ensureLoaded()
-        val authState = AuthRepository.state.value
-        if (authState !is AuthState.Authenticated || authState.isAnonymous) {
-            WatchProgressSourceCoordinator.ensureStarted()
-        }
+        WatchProgressSourceCoordinator.ensureStarted()
     }
 
     val addonSignals by AddonRepository.uiState.collectMappedAsState { state ->

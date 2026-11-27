@@ -107,6 +107,43 @@ class TraktProgressPagingTest {
         assertEquals(emptyList(), history)
     }
 
+    @Test
+    fun `executeTraktGetWithRetry retries transient 503 and 401 token expiry`() = runTest {
+        var attempts = 0
+        var refreshed = false
+
+        val result = executeTraktGetWithRetry(
+            headers = mapOf("Authorization" to "Bearer stale"),
+            fetch = { requestHeaders ->
+                attempts += 1
+                when (attempts) {
+                    1 -> response(status = 503, body = "")
+                    2 -> {
+                        if (requestHeaders["Authorization"] == "Bearer stale") {
+                            response(status = 401, body = "")
+                        } else {
+                            response(status = 200, body = "ok")
+                        }
+                    }
+                    else -> {
+                        assertEquals("Bearer refreshed", requestHeaders["Authorization"])
+                        response(status = 200, body = "ok")
+                    }
+                }
+            },
+            onUnauthorized = {
+                refreshed = true
+                mapOf("Authorization" to "Bearer refreshed")
+            },
+            sleep = {},
+        )
+
+        assertEquals(200, result.status)
+        assertEquals("ok", result.body)
+        assertEquals(true, refreshed)
+        assertEquals(3, attempts)
+    }
+
     private fun decodeList(payload: String): List<String> =
         payload.split(",").filter { it.isNotBlank() }
 

@@ -440,6 +440,15 @@ internal fun settingsSearchEntries(
     }
     addRow(
         page = SettingsPage.Advanced,
+        key = "downloads-wifi-only",
+        title = stringResource(Res.string.downloads_wifi_only_title),
+        description = stringResource(Res.string.downloads_wifi_only_enabled_desc),
+        pageLabel = advancedPage,
+        section = stringResource(Res.string.settings_advanced_section_downloads),
+        category = advancedCategory,
+    )
+    addRow(
+        page = SettingsPage.Advanced,
         key = "clear-cw-cache",
         title = stringResource(Res.string.settings_advanced_clear_cw_cache),
         description = stringResource(Res.string.settings_advanced_clear_cw_cache_subtitle),
@@ -966,6 +975,7 @@ internal fun settingsSearchEntries(
         PlaybackSearchRow("trakt-watch-progress", stringResource(Res.string.trakt_watch_progress_title), stringResource(Res.string.trakt_watch_progress_subtitle)),
         PlaybackSearchRow("trakt-continue-watching-window", stringResource(Res.string.trakt_continue_watching_window), stringResource(Res.string.trakt_continue_watching_subtitle)),
         PlaybackSearchRow("trakt-comments", stringResource(Res.string.settings_trakt_comments), stringResource(Res.string.settings_trakt_comments_description)),
+        PlaybackSearchRow("trakt-mirror-nuvio-sync", stringResource(Res.string.settings_trakt_mirror_nuvio_sync), stringResource(Res.string.settings_trakt_mirror_nuvio_sync_description)),
         PlaybackSearchRow("trakt-more-like-this-source", stringResource(Res.string.trakt_more_like_this_source_title), stringResource(Res.string.trakt_more_like_this_source_subtitle)),
     ).forEach { row ->
         addRow(

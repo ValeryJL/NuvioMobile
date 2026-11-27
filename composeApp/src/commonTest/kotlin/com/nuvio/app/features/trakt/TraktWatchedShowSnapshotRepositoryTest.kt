@@ -63,6 +63,68 @@ class TraktWatchedShowSnapshotRepositoryTest {
         assertEquals(2, requests)
     }
 
+    @Test
+    fun `cancelling first consumer does not fail concurrent sibling waiting on shared fetch`() = runBlocking {
+        val requestStarted = CompletableDeferred<Unit>()
+        val releaseRequest = CompletableDeferred<Unit>()
+        val client = TraktWatchedPageClient(
+            engine = TraktWatchedHttpEngine { url, _, _ ->
+                requestStarted.complete(Unit)
+                releaseRequest.await()
+                response(url)
+            },
+        )
+        val store = TraktWatchedShowSnapshotStore(
+            pageClient = client,
+            nowEpochMs = { 1_000L },
+        )
+
+        val first = async { store.get(headers()) }
+        requestStarted.await()
+        val second = async { store.get(headers()) }
+        yield()
+
+        first.cancel()
+        yield()
+        releaseRequest.complete(Unit)
+
+        val secondResult = second.await()
+        assertEquals(1, secondResult.size)
+        assertEquals("tt1", secondResult.single().show?.ids?.imdb)
+    }
+
+    @Test
+    fun `unauthorized watched show snapshot refreshes headers and retries once`() = runBlocking {
+        var refreshCalls = 0
+        val client = TraktWatchedPageClient(
+            engine = TraktWatchedHttpEngine { url, requestHeaders, _ ->
+                if (requestHeaders["Authorization"] == "Bearer fresh") {
+                    response(url)
+                } else {
+                    RawHttpResponse(
+                        status = 401,
+                        statusText = "Unauthorized",
+                        url = url,
+                        body = "",
+                        headers = emptyMap(),
+                    )
+                }
+            },
+        )
+        val store = TraktWatchedShowSnapshotStore(
+            pageClient = client,
+            nowEpochMs = { 1_000L },
+            onUnauthorized = {
+                refreshCalls += 1
+                mapOf("Authorization" to "Bearer fresh")
+            },
+        )
+
+        val items = store.get(headers())
+        assertEquals(1, items.size)
+        assertEquals(1, refreshCalls)
+    }
+
     private fun headers(): Map<String, String> = mapOf("Authorization" to "Bearer test")
 
     private fun response(url: String): RawHttpResponse = RawHttpResponse(

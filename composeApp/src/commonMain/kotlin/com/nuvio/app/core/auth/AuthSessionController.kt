@@ -365,7 +365,8 @@ internal class AuthSessionController(
         val gateway = gatewayProvider()
         val invalid = when {
             error.isDeletedAccountError() -> true
-            error.isJwtExpiredError() -> attemptRefresh(gateway) == RefreshAttemptResult.INVALID
+            error.isJwtExpiredError() || error.isInvalidSessionError() ->
+                attemptRefresh(gateway) == RefreshAttemptResult.INVALID
             else -> false
         }
         if (!invalid) return false

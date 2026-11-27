@@ -19,14 +19,22 @@ import com.nuvio.app.core.ui.DialogButton
 import com.nuvio.app.core.ui.DialogButtons
 import com.nuvio.app.core.ui.DialogButtonStyle
 import com.nuvio.app.core.ui.DialogSurface
+import com.nuvio.app.core.ui.NuvioStatusModal
 import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.nuvio
+import com.nuvio.app.features.downloads.DownloadsSettingsRepository
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingEnrichmentCache
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_cancel
+import nuvio.composeapp.generated.resources.downloads_cellular_confirm_action
+import nuvio.composeapp.generated.resources.downloads_cellular_confirm_message
+import nuvio.composeapp.generated.resources.downloads_cellular_confirm_title
+import nuvio.composeapp.generated.resources.downloads_wifi_only_disabled_desc
+import nuvio.composeapp.generated.resources.downloads_wifi_only_enabled_desc
+import nuvio.composeapp.generated.resources.downloads_wifi_only_title
 import nuvio.composeapp.generated.resources.settings_advanced_clear_cw_cache
 import nuvio.composeapp.generated.resources.settings_advanced_clear_cw_cache_done
 import nuvio.composeapp.generated.resources.settings_advanced_clear_cw_cache_subtitle
@@ -34,6 +42,7 @@ import nuvio.composeapp.generated.resources.settings_advanced_remember_last_prof
 import nuvio.composeapp.generated.resources.settings_advanced_remember_last_profile_description
 import nuvio.composeapp.generated.resources.settings_advanced_section_cache
 import nuvio.composeapp.generated.resources.settings_advanced_section_diagnostics
+import nuvio.composeapp.generated.resources.settings_advanced_section_downloads
 import nuvio.composeapp.generated.resources.settings_advanced_section_startup
 import nuvio.composeapp.generated.resources.settings_advanced_sentry_reports
 import nuvio.composeapp.generated.resources.settings_advanced_sentry_reports_subtitle
@@ -108,6 +117,53 @@ internal fun LazyListScope.advancedSettingsContent(
                 )
             }
         }
+    }
+    item {
+        val wifiOnly by remember {
+            DownloadsSettingsRepository.ensureLoaded()
+            DownloadsSettingsRepository.wifiOnly
+        }.collectAsStateWithLifecycle()
+        var showCellularConfirmDialog by rememberSaveable { mutableStateOf(false) }
+
+        SettingsSection(
+            title = stringResource(Res.string.settings_advanced_section_downloads),
+            isTablet = isTablet,
+        ) {
+            SettingsGroup(isTablet = isTablet) {
+                SettingsSwitchRow(
+                    title = stringResource(Res.string.downloads_wifi_only_title),
+                    description = stringResource(
+                        if (wifiOnly) {
+                            Res.string.downloads_wifi_only_enabled_desc
+                        } else {
+                            Res.string.downloads_wifi_only_disabled_desc
+                        },
+                    ),
+                    checked = wifiOnly,
+                    isTablet = isTablet,
+                    onCheckedChange = { enabled ->
+                        if (enabled) {
+                            DownloadsSettingsRepository.setWifiOnly(true)
+                        } else {
+                            showCellularConfirmDialog = true
+                        }
+                    },
+                )
+            }
+        }
+
+        NuvioStatusModal(
+            title = stringResource(Res.string.downloads_cellular_confirm_title),
+            message = stringResource(Res.string.downloads_cellular_confirm_message),
+            isVisible = showCellularConfirmDialog,
+            confirmText = stringResource(Res.string.downloads_cellular_confirm_action),
+            dismissText = stringResource(Res.string.action_cancel),
+            onConfirm = {
+                DownloadsSettingsRepository.setWifiOnly(false)
+                showCellularConfirmDialog = false
+            },
+            onDismiss = { showCellularConfirmDialog = false },
+        )
     }
     item {
         SettingsSection(

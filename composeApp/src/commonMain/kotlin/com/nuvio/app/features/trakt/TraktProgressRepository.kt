@@ -2,7 +2,6 @@ package com.nuvio.app.features.trakt
 
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.addons.RawHttpResponse
-import com.nuvio.app.features.addons.httpGetTextWithHeaders
 import com.nuvio.app.features.addons.httpRequestRaw
 import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.details.MetaDetailsRepository
@@ -24,6 +23,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -54,6 +54,9 @@ private const val METADATA_FETCH_TIMEOUT_MS = 3_500L
 private const val METADATA_FETCH_CONCURRENCY = 5
 private const val METADATA_HYDRATION_LIMIT = 110
 private const val REFRESH_BASE_INTERVAL_MS = 60L * 1000L
+private const val REFRESH_RETRY_INTERVAL_MS = 15L * 1000L
+private const val FOREGROUND_ACTIVITY_CHECK_COOLDOWN_MS = 10L * 1000L
+private const val TRAKT_GET_MAX_ATTEMPTS = 3
 private const val EPISODE_PROGRESS_CACHE_TTL_MS = 30L * 60L * 1000L
 private const val EPISODE_PROGRESS_FETCH_THROTTLE_MS = 60L * 1000L
 private const val OPTIMISTIC_PROGRESS_TTL_MS = 3L * 60L * 1000L
@@ -99,6 +102,7 @@ object TraktProgressRepository {
     private var lastKnownMoviesWatchedAt: String? = null
     private var lastKnownEpisodeActivityFingerprint: String? = null
     private var lastKnownActivityFingerprint: String? = null
+    private var lastActivityCheckAttemptAtMs: Long = 0L
     private val episodeProgressMutex = Mutex()
     private val episodeProgressFetchedAtMsByContentId = mutableMapOf<String, Long>()
     private val episodeProgressLastAttemptAtMsByContentId = mutableMapOf<String, Long>()
@@ -130,7 +134,6 @@ object TraktProgressRepository {
                     if (error is CancellationException) throw error
                     log.w { "Periodic Trakt activity refresh failed: ${error.message}" }
                 }
-                resetRefreshInterval()
             }
         }
     }
@@ -180,6 +183,36 @@ object TraktProgressRepository {
     fun refreshAsync() {
         scope.launch {
             refreshNow()
+        }
+    }
+
+    fun refreshIfActivityChangedAsync(
+        minIntervalMs: Long = FOREGROUND_ACTIVITY_CHECK_COOLDOWN_MS,
+    ) {
+        ensureLoaded()
+        TraktAuthRepository.ensureLoaded()
+        TraktSettingsRepository.ensureLoaded()
+        if (!shouldUseTraktProgress(
+                isAuthenticated = TraktAuthRepository.isAuthenticated.value,
+                source = TraktSettingsRepository.uiState.value.watchProgressSource,
+            )
+        ) {
+            return
+        }
+        val now = TraktPlatformClock.nowEpochMs()
+        val currentState = _uiState.value
+        val needsRetry = currentState.errorMessage != null || !currentState.hasLoadedRemoteProgress
+        if (!needsRetry && lastActivityCheckAttemptAtMs > 0L && now - lastActivityCheckAttemptAtMs < minIntervalMs) {
+            return
+        }
+        lastActivityCheckAttemptAtMs = now
+        scope.launch {
+            runCatching {
+                refreshIfActivityChanged()
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+                log.w { "Foreground Trakt activity refresh failed: ${error.message}" }
+            }
         }
     }
 
@@ -260,8 +293,22 @@ object TraktProgressRepository {
     }
 
     private suspend fun refreshIfActivityChanged() {
-        val headers = TraktAuthRepository.authorizedHeaders() ?: return
-        if (hasActivityChanged(headers) || !_uiState.value.hasLoadedRemoteProgress) {
+        val headers = TraktAuthRepository.authorizedHeaders()
+        if (headers == null) {
+            if (!TraktAuthRepository.isAuthenticated.value) {
+                refreshNow()
+            } else {
+                refreshIntervalMs = REFRESH_RETRY_INTERVAL_MS
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    errorMessage = TraktAuthRepository.uiState.value.errorMessage
+                        ?: getString(Res.string.trakt_progress_load_failed),
+                )
+            }
+            return
+        }
+        val state = _uiState.value
+        if (hasActivityChanged(headers) || !state.hasLoadedRemoteProgress || state.errorMessage != null) {
             refreshNow()
         }
     }
@@ -269,16 +316,16 @@ object TraktProgressRepository {
     private suspend fun hasActivityChanged(headers: Map<String, String>): Boolean {
         val activities = runCatching {
             val endpoint = "$BASE_URL/sync/last_activities"
-            val payload = httpGetTextWithHeaders(
-                url = endpoint,
+            val payload = executeTraktGetText(
                 headers = headers,
+                url = endpoint,
             )
             json.decodeFromString<TraktLastActivitiesResponse>(
                 payload,
             )
         }.onFailure { error ->
             if (error is CancellationException) throw error
-        }.getOrNull() ?: return !_uiState.value.hasLoadedRemoteProgress
+        }.getOrNull() ?: return !_uiState.value.hasLoadedRemoteProgress || _uiState.value.errorMessage != null
 
         val moviesWatchedAt = activities.movies?.watchedAt
         if (moviesWatchedAt != lastKnownMoviesWatchedAt) {
@@ -332,12 +379,25 @@ object TraktProgressRepository {
         val requestId = nextRefreshRequestId()
         val headers = TraktAuthRepository.authorizedHeaders()
         if (headers == null) {
-            remoteEntriesSnapshot = emptyList()
-            optimisticProgress.value = emptyMap()
-            _uiState.value = TraktProgressUiState()
+            if (!TraktAuthRepository.isAuthenticated.value) {
+                remoteEntriesSnapshot = emptyList()
+                optimisticProgress.value = emptyMap()
+                resetActivitySnapshot()
+                _uiState.value = TraktProgressUiState()
+            } else {
+                // Keep cached Continue Watching items across transient auth/network failures.
+                lastKnownActivityFingerprint = null
+                refreshIntervalMs = REFRESH_RETRY_INTERVAL_MS
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    errorMessage = TraktAuthRepository.uiState.value.errorMessage
+                        ?: getString(Res.string.trakt_progress_load_failed),
+                )
+            }
             return
         }
 
+        val hadLoadedRemoteProgress = _uiState.value.hasLoadedRemoteProgress
         publishProgressState(isLoading = true, errorMessage = null)
 
         val playbackEntries = runCatching {
@@ -352,9 +412,11 @@ object TraktProgressRepository {
             // The activity fingerprint already counts this change, so without clearing it the next
             // poll would see nothing new and the last snapshot would stay until the next activity.
             lastKnownActivityFingerprint = null
+            refreshIntervalMs = REFRESH_RETRY_INTERVAL_MS
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
                 errorMessage = getString(Res.string.trakt_progress_load_failed),
+                hasLoadedRemoteProgress = hadLoadedRemoteProgress,
             )
             return
         }
@@ -373,15 +435,22 @@ object TraktProgressRepository {
             entries = remoteEntriesSnapshot,
             isLoading = true,
             errorMessage = null,
-            hasLoadedRemoteProgress = false,
+            hasLoadedRemoteProgress = hadLoadedRemoteProgress,
         )
 
         val completedEntries = runCatching {
-            coroutineScope {
+            supervisorScope {
                 val history = async { fetchHistoryEntries(headers) }
                 val watchedShowSeeds = async { fetchWatchedShowSeedEntries(headers) }
-                val hiddenShows = async { fetchHiddenShowIds(headers) }
-                
+                val hiddenShows = async {
+                    runCatching { fetchHiddenShowIds(headers) }
+                        .onFailure { error ->
+                            if (error is CancellationException) throw error
+                            log.w { "Failed to fetch hidden Trakt shows: ${error.message}" }
+                        }
+                        .getOrNull()
+                }
+
                 val list = history.await() + watchedShowSeeds.await()
                 hiddenShows.await()?.let { hiddenProgressShowIds.value = it }
                 list
@@ -393,10 +462,13 @@ object TraktProgressRepository {
 
         if (completedEntries == null) {
             if (!isLatestRefreshRequest(requestId)) return
+            lastKnownActivityFingerprint = null
+            refreshIntervalMs = REFRESH_RETRY_INTERVAL_MS
             publishProgressState(
+                entries = remoteEntriesSnapshot,
                 isLoading = false,
-                errorMessage = null,
-                hasLoadedRemoteProgress = false,
+                errorMessage = getString(Res.string.trakt_progress_load_failed),
+                hasLoadedRemoteProgress = hadLoadedRemoteProgress,
             )
             return
         }
@@ -405,6 +477,7 @@ object TraktProgressRepository {
 
         remoteEntriesSnapshot = mergeNewestByVideoId(playbackEntries + completedEntries)
         reconcileOptimisticProgress(remoteEntriesSnapshot)
+        resetRefreshInterval()
 
         publishProgressState(
             entries = remoteEntriesSnapshot,
@@ -412,6 +485,7 @@ object TraktProgressRepository {
             errorMessage = null,
             hasLoadedRemoteProgress = true,
         )
+        TraktNuvioMirrorSync.mirrorProgressSnapshotAsync(remoteEntriesSnapshot)
 
         val visibleEntries = _uiState.value.entries
         if (visibleEntries.isNotEmpty()) {
@@ -596,7 +670,7 @@ object TraktProgressRepository {
 
         val playbackMovies = runCatching {
             json.decodeFromString<List<TraktPlaybackItem>>(
-                httpGetTextWithHeaders(
+                executeTraktGetText(
                     url = "$BASE_URL/sync/playback/movies",
                     headers = headers,
                 ),
@@ -604,7 +678,7 @@ object TraktProgressRepository {
         }.getOrDefault(emptyList())
         val playbackEpisodes = runCatching {
             json.decodeFromString<List<TraktPlaybackItem>>(
-                httpGetTextWithHeaders(
+                executeTraktGetText(
                     url = "$BASE_URL/sync/playback/episodes",
                     headers = headers,
                 ),
@@ -663,7 +737,7 @@ object TraktProgressRepository {
         val items = readAllTraktPages(
             pageLimit = 1000,
             fetchPage = { page, limit ->
-                httpGetTextWithHeaders(
+                executeTraktGetText(
                     url = "$BASE_URL/users/hidden/dropped?type=show&page=$page&limit=$limit",
                     headers = headers,
                 )
@@ -686,13 +760,13 @@ object TraktProgressRepository {
         val episodesEndpoint = "$BASE_URL/sync/playback/episodes"
         val payloads = coroutineScope {
             val moviesPayload = async {
-                httpGetTextWithHeaders(
+                executeTraktGetText(
                     url = moviesEndpoint,
                     headers = headers,
                 )
             }
             val episodesPayload = async {
-                httpGetTextWithHeaders(
+                executeTraktGetText(
                     url = episodesEndpoint,
                     headers = headers,
                 )
@@ -743,11 +817,9 @@ object TraktProgressRepository {
                     append("$BASE_URL/sync/history/episodes?page=$page&limit=$HISTORY_PAGE_LIMIT")
                     cutoffMs?.let { append("&start_at=").append(epochMsToTraktIso(it)) }
                 }
-                httpRequestRaw(
-                    method = "GET",
+                executeTraktGetRaw(
                     url = url,
                     headers = headers,
-                    body = "",
                 )
             },
             decodePage = { body -> json.decodeFromString<List<TraktHistoryEpisodeItem>>(body) },
@@ -763,13 +835,45 @@ object TraktProgressRepository {
             append("$BASE_URL/sync/history/movies?limit=$HISTORY_PAGE_LIMIT")
             cutoffMs?.let { append("&start_at=").append(epochMsToTraktIso(it)) }
         }
-        val payload = httpGetTextWithHeaders(url = url, headers = headers)
+        val payload = executeTraktGetText(url = url, headers = headers)
         val mapped = json.decodeFromString<List<TraktHistoryMovieItem>>(payload)
             .mapIndexedNotNull { index, item -> mapHistoryMovie(item = item, fallbackIndex = index) }
             .filter { entry -> cutoffMs == null || entry.lastUpdatedEpochMs >= cutoffMs }
             .distinctBy { entry -> entry.videoId }
         return mapped
     }
+
+    private suspend fun executeTraktGetText(
+        url: String,
+        headers: Map<String, String>,
+    ): String {
+        val response = executeTraktGetRaw(url = url, headers = headers)
+        if (response.status !in 200..299) {
+            throw TraktWatchedHttpException(response.status)
+        }
+        return response.body
+    }
+
+    private suspend fun executeTraktGetRaw(
+        url: String,
+        headers: Map<String, String>,
+    ): RawHttpResponse = executeTraktGetWithRetry(
+        fetch = { requestHeaders ->
+            httpRequestRaw(
+                method = "GET",
+                url = url,
+                headers = requestHeaders,
+                body = "",
+                maxResponseBodyBytes = TRAKT_WATCHED_MAX_RESPONSE_BODY_BYTES,
+            )
+        },
+        headers = headers,
+        onUnauthorized = { failedHeaders ->
+            TraktAuthRepository.refreshAuthorizedHeadersAfterUnauthorized(
+                failedAuthorizationHeader = failedHeaders["Authorization"],
+            )
+        },
+    )
 
     private suspend fun fetchWatchedShowSeedEntries(
         headers: Map<String, String>,
@@ -887,12 +991,14 @@ object TraktProgressRepository {
         contentId: String,
     ): List<WatchProgressEntry> = withContext(Dispatchers.Default) {
         val pathId = resolveToTraktAcceptedId(headers = headers, contentId = contentId)
-        val response = httpRequestRaw(
-            method = "GET",
-            url = "$BASE_URL/shows/$pathId/progress/watched?hidden=false&specials=false&count_specials=false",
-            headers = headers,
-            body = "",
-        )
+        val response = runCatching {
+            executeTraktGetRaw(
+                url = "$BASE_URL/shows/$pathId/progress/watched?hidden=false&specials=false&count_specials=false",
+                headers = headers,
+            )
+        }.onFailure { error ->
+            if (error is CancellationException) throw error
+        }.getOrNull() ?: return@withContext emptyList()
         if (response.status !in 200..299) return@withContext emptyList()
 
         val progress = runCatching {
@@ -944,11 +1050,9 @@ object TraktProgressRepository {
             }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
 
             val response = runCatching {
-                httpRequestRaw(
-                    method = "GET",
+                executeTraktGetRaw(
                     url = "$BASE_URL/search/tmdb/$tmdb?type=show",
                     headers = headers,
-                    body = "",
                 )
             }.getOrNull()
             if (response != null && response.status in 200..299) {
@@ -1584,6 +1688,55 @@ internal suspend fun <T> collectRecentTraktEpisodeHistory(
     }
 
     return resultsByShow.values.toList()
+}
+
+internal suspend fun executeTraktGetWithRetry(
+    headers: Map<String, String>,
+    maxAttempts: Int = TRAKT_GET_MAX_ATTEMPTS,
+    fetch: suspend (Map<String, String>) -> RawHttpResponse,
+    onUnauthorized: suspend (Map<String, String>) -> Map<String, String>? = { null },
+    sleep: suspend (Long) -> Unit = { delayMs -> delay(delayMs) },
+): RawHttpResponse {
+    var activeHeaders = headers
+    var retriedUnauthorized = false
+    var attempt = 0
+    var lastError: Throwable? = null
+    while (attempt < maxAttempts) {
+        val response = try {
+            fetch(activeHeaders)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            lastError = error
+            attempt += 1
+            if (attempt >= maxAttempts) throw error
+            sleep(traktWatchedRetryDelayMs(attempt = attempt - 1, retryAfterSeconds = null))
+            continue
+        }
+
+        if (response.status == 401 && !retriedUnauthorized) {
+            val refreshed = onUnauthorized(activeHeaders)
+            if (refreshed != null) {
+                activeHeaders = refreshed
+                retriedUnauthorized = true
+                continue
+            }
+        }
+
+        if (response.status in 200..299 || !isTransientTraktWatchedStatus(response.status)) {
+            return response
+        }
+
+        attempt += 1
+        if (attempt >= maxAttempts) {
+            return response
+        }
+        val retryAfter = response.headers.entries
+            .firstOrNull { (name, _) -> name.equals("retry-after", ignoreCase = true) }
+            ?.value
+        sleep(traktWatchedRetryDelayMs(attempt = attempt - 1, retryAfterSeconds = retryAfter))
+    }
+    throw (lastError ?: IllegalStateException("Trakt GET request exhausted without a response"))
 }
 
 private fun RawHttpResponse.headerInt(name: String): Int? =

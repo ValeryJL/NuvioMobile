@@ -4,8 +4,13 @@ import com.nuvio.app.features.addons.RawHttpResponse
 import com.nuvio.app.features.addons.httpRequestRaw
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -13,11 +18,12 @@ import kotlinx.serialization.json.Json
 private const val TRAKT_BASE_URL = "https://api.trakt.tv"
 private const val WATCHED_PAGE_LIMIT = 250
 private const val WATCHED_MAX_PAGES = 1_000
-private const val WATCHED_SHOWS_EXTENDED = "progress"
 private const val WATCHED_SHOW_SNAPSHOT_CACHE_TTL_MS = 15_000L
 internal const val TRAKT_WATCHED_MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024
-private const val TRAKT_WATCHED_MAX_ATTEMPTS = 2
+private const val TRAKT_WATCHED_MAX_ATTEMPTS = 3
 private const val TRAKT_WATCHED_MAX_RETRY_DELAY_MS = 60_000L
+
+private const val WATCHED_SHOWS_EXTENDED = "progress"
 
 internal fun interface TraktWatchedHttpEngine {
     suspend fun get(
@@ -32,12 +38,22 @@ internal class TraktWatchedPageClient(
     private val sleep: suspend (Long) -> Unit = { delayMs -> delay(delayMs) },
 ) {
     suspend fun get(url: String, headers: Map<String, String>): RawHttpResponse {
+        var lastError: Throwable? = null
         repeat(TRAKT_WATCHED_MAX_ATTEMPTS) { attempt ->
-            val response = engine.get(
-                url = url,
-                headers = headers,
-                maxResponseBodyBytes = TRAKT_WATCHED_MAX_RESPONSE_BODY_BYTES,
-            )
+            val response = try {
+                engine.get(
+                    url = url,
+                    headers = headers,
+                    maxResponseBodyBytes = TRAKT_WATCHED_MAX_RESPONSE_BODY_BYTES,
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                lastError = error
+                if (attempt == TRAKT_WATCHED_MAX_ATTEMPTS - 1) throw error
+                sleep(traktWatchedRetryDelayMs(attempt = attempt, retryAfterSeconds = null))
+                return@repeat
+            }
             if (response.status in 200..299) return response
             if (!isTransientTraktWatchedStatus(response.status) || attempt == TRAKT_WATCHED_MAX_ATTEMPTS - 1) {
                 throw TraktWatchedHttpException(response.status)
@@ -51,7 +67,7 @@ internal class TraktWatchedPageClient(
                 ),
             )
         }
-        error("Trakt watched request exhausted without a response")
+        throw (lastError ?: IllegalStateException("Trakt watched request exhausted without a response"))
     }
 }
 
@@ -84,6 +100,11 @@ private val platformTraktWatchedHttpEngine = TraktWatchedHttpEngine { url, heade
 internal object TraktWatchedShowSnapshotRepository {
     private val store = TraktWatchedShowSnapshotStore(
         pageClient = TraktWatchedPageClient(platformTraktWatchedHttpEngine),
+        onUnauthorized = { failedHeaders ->
+            TraktAuthRepository.refreshAuthorizedHeadersAfterUnauthorized(
+                failedAuthorizationHeader = failedHeaders["Authorization"],
+            )
+        },
     )
 
     suspend fun get(headers: Map<String, String>): List<TraktWatchedShowSnapshotItem> = store.get(headers)
@@ -95,6 +116,8 @@ internal class TraktWatchedShowSnapshotStore(
     private val pageClient: TraktWatchedPageClient,
     private val nowEpochMs: () -> Long = TraktPlatformClock::nowEpochMs,
     private val cacheTtlMs: Long = WATCHED_SHOW_SNAPSHOT_CACHE_TTL_MS,
+    private val fetchScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val onUnauthorized: suspend (Map<String, String>) -> Map<String, String>? = { null },
 ) {
     private val json = Json {
         ignoreUnknownKeys = true
@@ -134,34 +157,46 @@ internal class TraktWatchedShowSnapshotStore(
         lease.cachedItems?.let { return it }
 
         val deferred = requireNotNull(lease.deferred)
-        if (!lease.ownsFetch) {
-            return deferred.await()
+        if (lease.ownsFetch) {
+            // Execute the shared request on fetchScope so cancelling one waiter does not cancel siblings.
+            fetchScope.launch {
+                try {
+                    val items = fetchPagesWithAuthRetry(headers)
+                    synchronized(stateLock) {
+                        if (lease.generation == generation) {
+                            cachedSnapshot = CachedWatchedShowSnapshot(
+                                credentialKey = credentialKey,
+                                fetchedAtEpochMs = nowEpochMs(),
+                                items = items,
+                            )
+                        }
+                        if (inFlightByCredential[credentialKey] === deferred) {
+                            inFlightByCredential.remove(credentialKey)
+                        }
+                    }
+                    deferred.complete(items)
+                } catch (error: Throwable) {
+                    synchronized(stateLock) {
+                        if (inFlightByCredential[credentialKey] === deferred) {
+                            inFlightByCredential.remove(credentialKey)
+                        }
+                    }
+                    deferred.completeExceptionally(error)
+                }
+            }
         }
+        return deferred.await()
+    }
 
+    private suspend fun fetchPagesWithAuthRetry(headers: Map<String, String>): List<TraktWatchedShowSnapshotItem> {
+        var activeHeaders = headers
         return try {
-            val items = fetchPages(headers)
-            synchronized(stateLock) {
-                if (lease.generation == generation) {
-                    cachedSnapshot = CachedWatchedShowSnapshot(
-                        credentialKey = credentialKey,
-                        fetchedAtEpochMs = nowEpochMs(),
-                        items = items,
-                    )
-                }
-                if (inFlightByCredential[credentialKey] === deferred) {
-                    inFlightByCredential.remove(credentialKey)
-                }
-            }
-            deferred.complete(items)
-            items
-        } catch (error: Throwable) {
-            synchronized(stateLock) {
-                if (inFlightByCredential[credentialKey] === deferred) {
-                    inFlightByCredential.remove(credentialKey)
-                }
-            }
-            deferred.completeExceptionally(error)
-            throw error
+            fetchPages(activeHeaders)
+        } catch (error: TraktWatchedHttpException) {
+            if (error.status != 401) throw error
+            val refreshed = onUnauthorized(activeHeaders) ?: throw error
+            activeHeaders = refreshed
+            fetchPages(activeHeaders)
         }
     }
 

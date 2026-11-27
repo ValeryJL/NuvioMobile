@@ -3,6 +3,8 @@ package com.nuvio.app.features.watched
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
+import com.nuvio.app.core.auth.isInvalidSessionError
+import com.nuvio.app.core.auth.isJwtExpiredError
 import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
 import com.nuvio.app.features.addons.ADDON_LIBRARY_RESOURCE
 import com.nuvio.app.features.addons.AddonEventDispatcher
@@ -18,6 +20,7 @@ import com.nuvio.app.features.tracking.TrackingSettingsRepository
 import com.nuvio.app.features.tracking.WatchProgressSource
 import com.nuvio.app.features.tracking.effectiveWatchProgressSource
 import com.nuvio.app.features.tracking.providerId
+import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepository
 import com.nuvio.app.features.watching.sync.SupabaseWatchedSyncAdapter
 import com.nuvio.app.features.watching.sync.WatchedDeltaEvent
@@ -36,6 +39,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -159,6 +164,7 @@ object WatchedRepository {
     private var deltaCursorEventId: Long = 0L
     private var deltaInitialized: Boolean = false
     internal var syncAdapter: WatchedSyncAdapter = SupabaseWatchedSyncAdapter
+    private val nuvioSyncMutex = Mutex()
     private var extraKeysObserverJob: Job? = null
 
     fun ensureLoaded() {
@@ -431,7 +437,13 @@ object WatchedRepository {
     private suspend fun refreshNuvioSnapshot(
         operation: WatchedRefreshOperation,
         profileId: Int,
-    ): Boolean {
+    ): Boolean = nuvioSyncMutex.withLock {
+        pushDirtyNuvioWatchedLocked(
+            profileId = profileId,
+            operationGeneration = operation.profileGeneration,
+        )
+        if (!isActiveOperation(operation)) return@withLock false
+
         val cursorBeforeSnapshot = try {
             syncAdapter.getDeltaCursor(profileId)
         } catch (error: CancellationException) {
@@ -439,7 +451,7 @@ object WatchedRepository {
         } catch (_: Throwable) {
             null
         }
-        if (!isActiveOperation(operation)) return false
+        if (!isActiveOperation(operation)) return@withLock false
 
         val applied = pullSnapshotFromAdapter(
             adapter = syncAdapter,
@@ -447,13 +459,13 @@ object WatchedRepository {
             profileId = profileId,
             resetDeltaState = cursorBeforeSnapshot == null,
         )
-        if (!applied || !isActiveOperation(operation)) return false
+        if (!applied || !isActiveOperation(operation)) return@withLock false
         if (cursorBeforeSnapshot != null) {
             deltaCursorEventId = cursorBeforeSnapshot
             deltaInitialized = true
             persist()
         }
-        return true
+        true
     }
 
     private suspend fun pullSnapshotFromAdapter(
@@ -533,8 +545,13 @@ object WatchedRepository {
     private suspend fun pullSupabaseDeltaFromServer(
         operation: WatchedRefreshOperation,
         profileId: Int,
-    ): Boolean {
-        if (!isActiveOperation(operation)) return false
+    ): Boolean = nuvioSyncMutex.withLock {
+        if (!isActiveOperation(operation)) return@withLock false
+        pushDirtyNuvioWatchedLocked(
+            profileId = profileId,
+            operationGeneration = operation.profileGeneration,
+        )
+        if (!isActiveOperation(operation)) return@withLock false
         if (!deltaInitialized) {
             val cursorBeforeSnapshot = try {
                 syncAdapter.getDeltaCursor(profileId)
@@ -543,9 +560,9 @@ object WatchedRepository {
             } catch (_: Throwable) {
                 null
             }
-            if (!isActiveOperation(operation)) return false
+            if (!isActiveOperation(operation)) return@withLock false
             if (cursorBeforeSnapshot == null) {
-                return pullSnapshotFromAdapter(
+                return@withLock pullSnapshotFromAdapter(
                     adapter = syncAdapter,
                     operation = operation,
                     profileId = profileId,
@@ -558,11 +575,11 @@ object WatchedRepository {
                 profileId = profileId,
                 resetDeltaState = false,
             )
-            if (!applied || !isActiveOperation(operation)) return false
+            if (!applied || !isActiveOperation(operation)) return@withLock false
             deltaCursorEventId = cursorBeforeSnapshot
             deltaInitialized = true
             persist()
-            return true
+            return@withLock true
         }
 
         var cursor = deltaCursorEventId
@@ -574,7 +591,7 @@ object WatchedRepository {
                 sinceEventId = cursor,
                 limit = watchedItemsDeltaPageSize,
             )
-            if (!isActiveOperation(operation)) return false
+            if (!isActiveOperation(operation)) return@withLock false
             if (events.isEmpty()) break
 
             itemsStore.update { nuvioItems, _, dirtyNuvioKeys, _ ->
@@ -592,7 +609,7 @@ object WatchedRepository {
             if (events.size < watchedItemsDeltaPageSize) break
         }
 
-        if (!isActiveOperation(operation)) return false
+        if (!isActiveOperation(operation)) return@withLock false
         nuvioHasLoaded = true
         val remoteReadinessChanged = !nuvioHasLoadedRemote
         nuvioHasLoadedRemote = true
@@ -602,7 +619,7 @@ object WatchedRepository {
         if (changed) {
             persist()
         }
-        return true
+        true
     }
 
     private fun applyWatchedDeltaEvents(
@@ -795,6 +812,7 @@ object WatchedRepository {
         ensureLoaded()
         if (items.isEmpty()) return
         val source = activeSource
+        val mirrorTraktToNuvio = shouldMirrorTraktWatchedToNuvio(source)
         val markedAt = WatchedClock.nowEpochMs()
         val timestampedItems = items.map { watchedItem ->
             watchedItem.copy(markedAtEpochMs = markedAt)
@@ -810,6 +828,10 @@ object WatchedRepository {
                 val key = watchedItemKey(watchedItem.type, watchedItem.id, watchedItem.season, watchedItem.episode)
                 targetItems[key] = watchedItem
                 dirtyKeys += key
+                if (mirrorTraktToNuvio && source.providerId != null && !ServerWatched.isServerItem(watchedItem)) {
+                    nuvioItems[key] = watchedItem
+                    dirtyNuvioKeys += key
+                }
             }
         }
         publish()
@@ -819,6 +841,7 @@ object WatchedRepository {
                 items = timestampedItems,
                 trackerHistorySync = trackerHistorySync,
                 source = source,
+                mirrorToNuvio = mirrorTraktToNuvio,
             )
         }
     }
@@ -883,6 +906,7 @@ object WatchedRepository {
         ensureLoaded()
         if (items.isEmpty()) return
         val source = activeSource
+        val mirrorTraktToNuvio = shouldMirrorTraktWatchedToNuvio(source)
         val (removedItems, removedExtraKeys) = itemsStore.update { nuvioItems, providerItems, dirtyNuvioKeys, dirtyProviderKeys ->
             val targetItems = source.providerId
                 ?.let { providerId -> providerItems.getOrPut(providerId, ::mutableMapOf) }
@@ -907,6 +931,13 @@ object WatchedRepository {
                             extraKeysChanged = true
                         }
                     }
+                    if (mirrorTraktToNuvio) {
+                        val nuvioMatchKey = keys.firstOrNull(nuvioItems::containsKey)
+                        if (nuvioMatchKey != null) {
+                            nuvioItems.remove(nuvioMatchKey)
+                            dirtyNuvioKeys.remove(nuvioMatchKey)
+                        }
+                    }
                 }
                 matchingKey?.let(targetItems::remove)?.let { storeItem ->
                     if (watchedItem.videoId != null && storeItem.videoId == null) {
@@ -921,13 +952,25 @@ object WatchedRepository {
         if (removedItems.isNotEmpty()) {
             publish()
             persist()
-            if (syncRemote) pushDeleteToServer(items = removedItems, source = source)
+            if (syncRemote) {
+                pushDeleteToServer(
+                    items = removedItems,
+                    source = source,
+                    mirrorToNuvio = mirrorTraktToNuvio,
+                )
+            }
         } else if (source.providerId != null) {
             if (removedExtraKeys) {
                 publish()
                 persist()
             }
-            if (syncRemote) pushDeleteToServer(items = items.toList(), source = source)
+            if (syncRemote) {
+                pushDeleteToServer(
+                    items = items.toList(),
+                    source = source,
+                    mirrorToNuvio = mirrorTraktToNuvio,
+                )
+            }
         }
     }
 
@@ -1086,6 +1129,7 @@ object WatchedRepository {
         items: Collection<WatchedItem>,
         trackerHistorySync: WatchedTrackerHistorySync,
         source: WatchProgressSource,
+        mirrorToNuvio: Boolean = false,
     ) {
         val profileId = currentProfileId
         val operationGeneration = profileGeneration
@@ -1098,8 +1142,12 @@ object WatchedRepository {
                     items = items,
                     trackerHistorySync = trackerHistorySync,
                     source = source,
+                    mirrorToNuvio = mirrorToNuvio,
                 )
-                if (shouldAcknowledgeNuvioWatchedPush(source = source, outcome = outcome)) {
+                if (
+                    shouldAcknowledgeNuvioWatchedPush(source = source, outcome = outcome) ||
+                    (mirrorToNuvio && outcome.nuvioSyncSucceeded)
+                ) {
                     recordSuccessfulPush(
                         profileId = profileId,
                         operationGeneration = operationGeneration,
@@ -1107,6 +1155,7 @@ object WatchedRepository {
                     )
                 }
             }.onFailure { e ->
+                if (e is CancellationException) throw e
                 log.e(e) { "Failed to push watched items" }
             }
         }
@@ -1115,6 +1164,7 @@ object WatchedRepository {
     private fun pushDeleteToServer(
         items: Collection<WatchedItem>,
         source: WatchProgressSource,
+        mirrorToNuvio: Boolean = false,
     ) {
         val profileId = currentProfileId
         ServerWatched.mirror(items, played = false)
@@ -1125,8 +1175,10 @@ object WatchedRepository {
                     profileId = profileId,
                     items = items,
                     source = source,
+                    mirrorToNuvio = mirrorToNuvio,
                 )
             }.onFailure { e ->
+                if (e is CancellationException) throw e
                 log.e(e) { "Failed to push watched item delete" }
             }
         }
@@ -1312,20 +1364,216 @@ object WatchedRepository {
         if (changed) persist()
     }
 
+    private fun shouldMirrorTraktWatchedToNuvio(source: WatchProgressSource): Boolean {
+        if (source.providerId != TrackingProviderId.TRAKT) return false
+        TraktSettingsRepository.ensureLoaded()
+        return TraktSettingsRepository.uiState.value.mirrorTraktToNuvioSync
+    }
+
+    private fun hasAuthenticatedNuvioSyncAccount(): Boolean {
+        val authState = AuthRepository.state.value
+        return authState is AuthState.Authenticated && !authState.isAnonymous
+    }
+
+    private suspend fun pushNuvioWatchedWithAuthRetry(
+        profileId: Int,
+        items: Collection<WatchedItem>,
+        source: String,
+    ) {
+        if (items.isEmpty()) return
+        try {
+            syncAdapter.push(profileId = profileId, items = items)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            if (error.isJwtExpiredError() || error.isInvalidSessionError()) {
+                val signedOut = AuthRepository.signOutIfSessionInvalid(error, source)
+                if (!signedOut) {
+                    syncAdapter.push(profileId = profileId, items = items)
+                    return
+                }
+            }
+            throw error
+        }
+    }
+
+    private suspend fun deleteNuvioWatchedWithAuthRetry(
+        profileId: Int,
+        items: Collection<WatchedItem>,
+        source: String,
+    ) {
+        if (items.isEmpty()) return
+        try {
+            syncAdapter.delete(profileId = profileId, items = items)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            if (error.isJwtExpiredError() || error.isInvalidSessionError()) {
+                val signedOut = AuthRepository.signOutIfSessionInvalid(error, source)
+                if (!signedOut) {
+                    syncAdapter.delete(profileId = profileId, items = items)
+                    return
+                }
+            }
+            throw error
+        }
+    }
+
+    private suspend fun pushDirtyNuvioWatchedLocked(
+        profileId: Int,
+        operationGeneration: Long,
+    ) {
+        if (!hasAuthenticatedNuvioSyncAccount()) return
+        if (currentProfileId != profileId || profileGeneration != operationGeneration) return
+        if (ProfileRepository.activeProfileId != profileId) return
+
+        val dirtyItems = itemsStore.read { nuvioItems, _, dirtyNuvioKeys, _ ->
+            dirtyNuvioKeys.mapNotNull { key ->
+                nuvioItems[key]?.takeUnless(ServerWatched::isServerItem)
+            }
+        }
+        if (dirtyItems.isEmpty()) return
+
+        for (chunk in dirtyItems.chunked(200)) {
+            if (currentProfileId != profileId || profileGeneration != operationGeneration) return
+            try {
+                pushNuvioWatchedWithAuthRetry(
+                    profileId = profileId,
+                    items = chunk,
+                    source = "watched dirty flush",
+                )
+                recordSuccessfulPush(
+                    profileId = profileId,
+                    operationGeneration = operationGeneration,
+                    items = chunk,
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                log.w(error) { "Failed to flush ${chunk.size} dirty watched items for profile $profileId" }
+                return
+            }
+        }
+    }
+
+    internal suspend fun flushDirtyNuvioWatchedIfAuthenticated(profileId: Int) {
+        ensureLoaded()
+        if (!hasAuthenticatedNuvioSyncAccount()) return
+        if (ProfileRepository.activeProfileId != profileId) return
+        if (currentProfileId != profileId) {
+            loadFromDisk(profileId)
+        }
+        val expectedGeneration = profileGeneration
+        nuvioSyncMutex.withLock {
+            pushDirtyNuvioWatchedLocked(
+                profileId = profileId,
+                operationGeneration = expectedGeneration,
+            )
+        }
+    }
+
+    internal suspend fun mirrorItemsToNuvioSync(
+        profileId: Int,
+        computeAdditions: (existingNuvioItems: Collection<WatchedItem>) -> List<WatchedItem>,
+    ) {
+        ensureLoaded()
+        if (!hasAuthenticatedNuvioSyncAccount()) return
+        if (ProfileRepository.activeProfileId != profileId) return
+        if (currentProfileId != profileId) {
+            loadFromDisk(profileId)
+        }
+        val expectedGeneration = profileGeneration
+        nuvioSyncMutex.withLock {
+            if (currentProfileId != profileId || profileGeneration != expectedGeneration) return
+            if (ProfileRepository.activeProfileId != profileId) return
+            if (!nuvioHasLoadedRemote) {
+                runCatching {
+                    val serverItems = syncAdapter.pull(
+                        profileId = profileId,
+                        pageSize = watchedItemsPageSize,
+                    )
+                    if (currentProfileId == profileId && profileGeneration == expectedGeneration) {
+                        itemsStore.update { nuvioItems, _, dirtyNuvioKeys, _ ->
+                            val merged = mergeWatchedSnapshot(
+                                serverItems = serverItems,
+                                localItems = nuvioItems.values.toList(),
+                                dirtyKeys = dirtyNuvioKeys,
+                                acknowledgeDirtyByPresence = false,
+                            )
+                            nuvioItems.clear()
+                            nuvioItems.putAll(merged.items)
+                            dirtyNuvioKeys.clear()
+                            dirtyNuvioKeys += merged.dirtyKeys
+                        }
+                        nuvioHasLoaded = true
+                        nuvioHasLoadedRemote = true
+                        publish()
+                        persist()
+                    }
+                }.onFailure { error ->
+                    if (error is CancellationException) throw error
+                    log.w(error) { "Unable to warm Nuvio Sync watched baseline before Trakt mirror for profile $profileId" }
+                }
+            }
+            if (currentProfileId != profileId || profileGeneration != expectedGeneration) return
+            val existingNuvio = itemsStore.read { nuvioItems, _, _, _ -> nuvioItems.values.toList() }
+            val additions = computeAdditions(existingNuvio)
+                .filterNot(ServerWatched::isServerItem)
+                .map(WatchedItem::normalizedMarkedAt)
+            if (additions.isEmpty()) return
+
+            itemsStore.update { nuvioItems, _, dirtyNuvioKeys, _ ->
+                additions.forEach { item ->
+                    val key = watchedItemKey(item.type, item.id, item.season, item.episode)
+                    nuvioItems[key] = item
+                    dirtyNuvioKeys += key
+                }
+            }
+            publish()
+            persist()
+
+            for (chunk in additions.chunked(200)) {
+                if (currentProfileId != profileId || profileGeneration != expectedGeneration) return
+                try {
+                    pushNuvioWatchedWithAuthRetry(
+                        profileId = profileId,
+                        items = chunk,
+                        source = "trakt watched mirror",
+                    )
+                    recordSuccessfulPush(
+                        profileId = profileId,
+                        operationGeneration = expectedGeneration,
+                        items = chunk,
+                    )
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    log.w(error) { "Failed to push mirrored Trakt watched history to Nuvio Sync for profile $profileId" }
+                    return
+                }
+            }
+        }
+    }
+
     private suspend fun pushToTargetsForSource(
         profileId: Int,
         items: Collection<WatchedItem>,
         trackerHistorySync: WatchedTrackerHistorySync,
         source: WatchProgressSource,
+        mirrorToNuvio: Boolean = false,
     ): WatchedPushOutcome {
         val (serverItems, items) = items.partition(ServerWatched::isServerItem)
         if (trackerHistorySync == WatchedTrackerHistorySync.Mirror) ServerWatched.apply(serverItems, played = true)
         if (items.isEmpty()) return WatchedPushOutcome(nuvioSyncSucceeded = true)
         var nuvioSyncSucceeded = false
         val succeededTrackerProviderIds = linkedSetOf<TrackingProviderId>()
-        if (source.providerId == null) {
+        if ((source.providerId == null || mirrorToNuvio) && hasAuthenticatedNuvioSyncAccount()) {
             try {
-                syncAdapter.push(profileId = profileId, items = items)
+                pushNuvioWatchedWithAuthRetry(
+                    profileId = profileId,
+                    items = items,
+                    source = "watched mark",
+                )
                 nuvioSyncSucceeded = true
             } catch (error: CancellationException) {
                 throw error
@@ -1356,13 +1604,18 @@ object WatchedRepository {
         profileId: Int,
         items: Collection<WatchedItem>,
         source: WatchProgressSource,
+        mirrorToNuvio: Boolean = false,
     ) {
         val (serverItems, items) = items.partition(ServerWatched::isServerItem)
         ServerWatched.apply(serverItems, played = false)
         if (items.isEmpty()) return
-        if (source.providerId == null) {
+        if ((source.providerId == null || mirrorToNuvio) && hasAuthenticatedNuvioSyncAccount()) {
             try {
-                syncAdapter.delete(profileId = profileId, items = items)
+                deleteNuvioWatchedWithAuthRetry(
+                    profileId = profileId,
+                    items = items,
+                    source = "watched unmark",
+                )
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {

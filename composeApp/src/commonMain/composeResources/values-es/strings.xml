@@ -2609,9 +2609,7 @@
     <string name="downloads_cellular_confirm_action">Usar datos</string>
     <string name="downloads_status_waiting_wifi">Esperando Wi-Fi</string>
     <string name="downloads_pause_reason_wifi_only">Esperando Wi-Fi (el modo Solo Wi-Fi está activo)</string>
-    <string name="settings_trakt_sync_continue_watching">Sincronizar Continuar viendo</string>
-    <string name="settings_trakt_sync_continue_watching_desc">Limpia la caché de Trakt y vuelve a traer tu progreso e historial actualizado</string>
-    <string name="settings_trakt_sync_continue_watching_syncing">Sincronizando Continuar viendo con Trakt…</string>
-    <string name="trakt_continue_watching_sync_done">Continuar viendo sincronizado con Trakt</string>
-    <string name="trakt_continue_watching_sync_failed">No se pudo sincronizar Continuar viendo con Trakt</string>
+    <string name="settings_advanced_section_downloads">DESCARGAS</string>
+    <string name="settings_trakt_mirror_nuvio_sync">Replicar Trakt en Nuvio Sync</string>
+    <string name="settings_trakt_mirror_nuvio_sync_description">Guarda en Nuvio Sync una copia de tu progreso, historial visto y completados de Trakt como respaldo</string>
 </resources>

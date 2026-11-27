@@ -17,6 +17,8 @@ import com.nuvio.app.features.tracking.TrackingSettingsRepository
 import com.nuvio.app.features.tracking.WatchProgressSource
 import com.nuvio.app.features.tracking.effectiveLibrarySourceMode
 import com.nuvio.app.features.tracking.effectiveWatchProgressSource
+import com.nuvio.app.features.watched.WatchedRepository
+import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import com.nuvio.app.features.watchprogress.WatchProgressSourceCoordinator
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
@@ -288,6 +290,8 @@ object SyncManager {
         syncProviderCredentials = { profileId -> ProviderCredentialSync.syncFromRemote(profileId) },
         pullLibrary = { profileId -> LibraryRepository.pullFromServer(profileId) },
         refreshActiveWatchSource = { profileId ->
+            WatchProgressRepository.flushDirtyProgressToServer(profileId)
+            WatchedRepository.flushDirtyNuvioWatchedIfAuthenticated(profileId)
             val result = WatchProgressSourceCoordinator.refreshActiveSource(profileId = profileId, force = true)
             check(result.succeeded) {
                 "Active watch source refresh was incomplete: " +
@@ -301,6 +305,8 @@ object SyncManager {
     private val profileActivitySyncOperations = ProfileActivitySyncOperations(
         pullLibrary = { profileId -> LibraryRepository.pullFromServer(profileId) },
         pullWatchActivity = { profileId ->
+            WatchProgressRepository.flushDirtyProgressToServer(profileId)
+            WatchedRepository.flushDirtyNuvioWatchedIfAuthenticated(profileId)
             val result = WatchProgressSourceCoordinator.refreshActiveSource(profileId = profileId, force = false)
             check(result.succeeded) {
                 "Active watch source refresh was incomplete: " +
@@ -548,6 +554,10 @@ object SyncManager {
                 ) == WatchProgressSource.NUVIO_SYNC
 
                 if (!shouldPullLibrary && !shouldPullWatchProgress) {
+                    if (settings.mirrorTraktToNuvioSync) {
+                        WatchProgressRepository.flushDirtyProgressToServer(profileId)
+                        WatchedRepository.flushDirtyNuvioWatchedIfAuthenticated(profileId)
+                    }
                     continue
                 }
 

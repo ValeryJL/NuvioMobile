@@ -8,8 +8,10 @@ import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.TrackingWatchedProvider
 import com.nuvio.app.features.trakt.TraktAuthRepository
 import com.nuvio.app.features.trakt.TraktEpisodeMappingService
+import com.nuvio.app.features.trakt.TraktNuvioMirrorSync
 import com.nuvio.app.features.trakt.TraktPlatformClock
 import com.nuvio.app.features.trakt.TraktWatchedHttpEngine
+import com.nuvio.app.features.trakt.TraktWatchedHttpException
 import com.nuvio.app.features.trakt.TraktWatchedPageClient
 import com.nuvio.app.features.trakt.TraktWatchedShowSnapshotRepository
 import com.nuvio.app.features.trakt.TraktWatchedSnapshotIds
@@ -120,6 +122,10 @@ object TraktWatchedSyncAdapter : TrackingWatchedProvider {
 
         val projection = buildTraktWatchedProjection(candidates)
         setExtraWatchedKeys(profileId, projection.extraWatchedKeys)
+        TraktNuvioMirrorSync.mirrorWatchedItemsAsync(
+            items = projection.items,
+            profileId = profileId,
+        )
         return projection.items
     }
 
@@ -129,6 +135,18 @@ object TraktWatchedSyncAdapter : TrackingWatchedProvider {
     override fun observeExtraWatchedKeys(profileId: Int) = emptyFlow<Set<String>>()
 
     private suspend fun fetchWatchedMoviePages(headers: Map<String, String>): List<TraktWatchedMovieDto> {
+        return try {
+            fetchWatchedMoviePagesWithHeaders(headers)
+        } catch (error: TraktWatchedHttpException) {
+            if (error.status != 401) throw error
+            val refreshed = TraktAuthRepository.refreshAuthorizedHeadersAfterUnauthorized(
+                failedAuthorizationHeader = headers["Authorization"],
+            ) ?: throw error
+            fetchWatchedMoviePagesWithHeaders(refreshed)
+        }
+    }
+
+    private suspend fun fetchWatchedMoviePagesWithHeaders(headers: Map<String, String>): List<TraktWatchedMovieDto> {
         val items = mutableListOf<TraktWatchedMovieDto>()
         var page = 1
         while (page <= WATCHED_MAX_PAGES) {

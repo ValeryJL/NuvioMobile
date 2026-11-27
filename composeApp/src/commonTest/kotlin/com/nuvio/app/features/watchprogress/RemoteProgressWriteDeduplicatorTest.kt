@@ -50,6 +50,25 @@ class RemoteProgressWriteDeduplicatorTest {
         )
     }
 
+    @Test
+    fun `forget allows immediate retry after failed remote write`() {
+        val deduplicator = RemoteProgressWriteDeduplicator(windowMs = 5_000L)
+        val entry = progressEntry(positionMs = 30_000L, updatedAtEpochMs = 1_000L)
+
+        assertTrue(deduplicator.shouldSend(profileId = 1, entry = entry, nowEpochMs = 1_000L))
+        assertFalse(deduplicator.shouldSend(profileId = 1, entry = entry.copy(lastUpdatedEpochMs = 1_500L), nowEpochMs = 1_500L))
+
+        deduplicator.forget(profileId = 1, progressKey = entry.resolvedProgressKey())
+
+        assertTrue(
+            deduplicator.shouldSend(
+                profileId = 1,
+                entry = entry.copy(lastUpdatedEpochMs = 1_600L),
+                nowEpochMs = 1_600L,
+            ),
+        )
+    }
+
     private fun progressEntry(
         positionMs: Long,
         updatedAtEpochMs: Long,

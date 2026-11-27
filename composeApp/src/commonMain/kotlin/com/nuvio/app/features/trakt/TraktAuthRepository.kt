@@ -204,12 +204,34 @@ object TraktAuthRepository : TrackingAuthProvider {
         val accessToken = authState.accessToken?.trim().orEmpty()
         if (accessToken.isBlank()) return null
 
-        return mapOf(
-            "trakt-api-version" to API_VERSION,
-            "trakt-api-key" to TraktConfig.CLIENT_ID,
-            "Authorization" to "Bearer $accessToken",
-        )
+        return buildAuthHeaders(accessToken)
     }
+
+    suspend fun refreshAuthorizedHeadersAfterUnauthorized(
+        failedAuthorizationHeader: String? = null,
+        profileId: Int = currentProfileId,
+    ): Map<String, String>? {
+        ensureLoaded(profileId)
+        if (!authState.isAuthenticated) return null
+
+        val hasValidToken = refreshTokenIfNeeded(
+            force = true,
+            expectedOldAuthorizationHeader = failedAuthorizationHeader,
+            profileId = profileId,
+        )
+        if (!hasValidToken) return null
+
+        val accessToken = authState.accessToken?.trim().orEmpty()
+        if (accessToken.isBlank()) return null
+
+        return buildAuthHeaders(accessToken)
+    }
+
+    private fun buildAuthHeaders(accessToken: String): Map<String, String> = mapOf(
+        "trakt-api-version" to API_VERSION,
+        "trakt-api-key" to TraktConfig.CLIENT_ID,
+        "Authorization" to "Bearer $accessToken",
+    )
 
     suspend fun refreshUserSettings(profileId: Int = currentProfileId): String? {
         ensureLoaded(profileId)
@@ -420,8 +442,20 @@ object TraktAuthRepository : TrackingAuthProvider {
         )
     }
 
-    private suspend fun refreshTokenIfNeeded(force: Boolean, profileId: Int = currentProfileId): Boolean = refreshMutex.withLock {
-        if (!hasRequiredCredentials()) return@withLock false
+    private suspend fun refreshTokenIfNeeded(
+        force: Boolean,
+        expectedOldAuthorizationHeader: String? = null,
+        profileId: Int = currentProfileId,
+    ): Boolean = refreshMutex.withLock {
+        if (!hasRequiredCredentials() || ProfileRepository.activeProfileId != profileId) return@withLock false
+        val currentAccessToken = authState.accessToken?.trim().orEmpty()
+        if (expectedOldAuthorizationHeader != null &&
+            currentAccessToken.isNotBlank() &&
+            "Bearer $currentAccessToken" != expectedOldAuthorizationHeader &&
+            !isTokenExpiredOrExpiring(authState)
+        ) {
+            return@withLock true
+        }
         val refreshToken = authState.refreshToken?.takeIf { it.isNotBlank() }
             ?: return@withLock false
 
@@ -461,7 +495,12 @@ object TraktAuthRepository : TrackingAuthProvider {
         }.onFailure { error ->
             if (error is CancellationException) throw error
             log.w { "Trakt token refresh transport failure: ${error.message}" }
-        }.getOrNull() ?: return@withLock false
+        }.getOrNull() ?: run {
+            if (isTokenExpiredOrExpiring(authState)) {
+                publish(errorMessage = localizedString(Res.string.trakt_progress_load_failed))
+            }
+            return@withLock false
+        }
 
         if (ProfileRepository.activeProfileId != profileId || authState.refreshToken != refreshToken) {
             return@withLock false
@@ -476,6 +515,9 @@ object TraktAuthRepository : TrackingAuthProvider {
 
             TraktTokenRefreshResponseAction.TRANSIENT_FAILURE -> {
                 log.w { "Trakt token refresh failed with HTTP ${response.status}" }
+                if (isTokenExpiredOrExpiring(authState) || force) {
+                    publish(errorMessage = localizedString(Res.string.trakt_progress_load_failed))
+                }
                 return@withLock false
             }
 
@@ -484,7 +526,12 @@ object TraktAuthRepository : TrackingAuthProvider {
 
         val parsed = runCatching {
             json.decodeFromString<TraktTokenResponse>(response.body)
-        }.getOrNull() ?: return@withLock false
+        }.getOrNull() ?: run {
+            if (isTokenExpiredOrExpiring(authState)) {
+                publish(errorMessage = localizedString(Res.string.trakt_progress_load_failed))
+            }
+            return@withLock false
+        }
 
         authState = authState.copy(
             accessToken = parsed.accessToken,
@@ -494,7 +541,7 @@ object TraktAuthRepository : TrackingAuthProvider {
             expiresIn = parsed.expiresIn,
         )
         persist(profileId)
-        publish()
+        publish(isLoading = false, statusMessage = null, errorMessage = null)
         true
     }
 

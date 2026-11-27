@@ -151,4 +151,9 @@ class TraktSettingsRepositoryTest {
             ),
         )
     }
+
+    @Test
+    fun `mirror Trakt to Nuvio Sync defaults to disabled`() {
+        assertFalse(TraktSettingsUiState().mirrorTraktToNuvioSync)
+    }
 }

@@ -92,6 +92,8 @@ import nuvio.composeapp.generated.resources.settings_mdblist_library_lists_descr
 import nuvio.composeapp.generated.resources.settings_mdblist_library_lists_summary
 import nuvio.composeapp.generated.resources.settings_trakt_comments
 import nuvio.composeapp.generated.resources.settings_trakt_comments_description
+import nuvio.composeapp.generated.resources.settings_trakt_mirror_nuvio_sync
+import nuvio.composeapp.generated.resources.settings_trakt_mirror_nuvio_sync_description
 import nuvio.composeapp.generated.resources.tracking_source_simkl
 import nuvio.composeapp.generated.resources.tracking_watch_progress_dialog_subtitle
 import nuvio.composeapp.generated.resources.trakt_all_history
@@ -421,6 +423,18 @@ private fun TrackingViewingAndDiscovery(
             enabled = traktConnected,
             isTablet = isTablet,
             onCheckedChange = onCommentsEnabledChange,
+        )
+        SettingsGroupDivider(isTablet = isTablet)
+        SettingsSwitchRow(
+            title = stringResource(Res.string.settings_trakt_mirror_nuvio_sync),
+            description = listOfNotNull(
+                stringResource(Res.string.settings_trakt_mirror_nuvio_sync_description),
+                connectTraktFirst.takeUnless { traktConnected },
+            ).joinToString("\n"),
+            checked = settingsUiState.mirrorTraktToNuvioSync,
+            enabled = traktConnected,
+            isTablet = isTablet,
+            onCheckedChange = TrackingSettingsRepository::setMirrorTraktToNuvioSync,
         )
     }
 
