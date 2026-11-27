@@ -35,5 +35,7 @@ internal expect object DownloadsPlatformDownloader {
 
     fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String?
 
+    fun onWifiOnlyChanged(wifiOnly: Boolean)
+
     fun openDownloadsDirectory(): Boolean
 }

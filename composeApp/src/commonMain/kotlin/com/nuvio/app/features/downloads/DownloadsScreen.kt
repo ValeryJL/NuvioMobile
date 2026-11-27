@@ -44,8 +44,10 @@ import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.PlatformBackHandler
 import com.nuvio.app.core.ui.nuvio
 import com.nuvio.app.core.ui.nuvioTypeScale
+import com.nuvio.app.features.settings.SettingsSwitchRow
 import com.nuvio.app.features.watched.WatchedRepository
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
+import kotlinx.coroutines.delay
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_cancel
 import nuvio.composeapp.generated.resources.action_delete
@@ -54,6 +56,9 @@ import nuvio.composeapp.generated.resources.compose_settings_root_downloads_titl
 import nuvio.composeapp.generated.resources.downloads_battery_banner_action
 import nuvio.composeapp.generated.resources.downloads_battery_banner_message
 import nuvio.composeapp.generated.resources.downloads_battery_banner_title
+import nuvio.composeapp.generated.resources.downloads_cellular_confirm_action
+import nuvio.composeapp.generated.resources.downloads_cellular_confirm_message
+import nuvio.composeapp.generated.resources.downloads_cellular_confirm_title
 import nuvio.composeapp.generated.resources.downloads_delete_message
 import nuvio.composeapp.generated.resources.downloads_delete_title
 import nuvio.composeapp.generated.resources.downloads_empty_message
@@ -68,6 +73,9 @@ import nuvio.composeapp.generated.resources.downloads_section_downloaded
 import nuvio.composeapp.generated.resources.downloads_show_downloads
 import nuvio.composeapp.generated.resources.downloads_titles
 import nuvio.composeapp.generated.resources.downloads_watched_count
+import nuvio.composeapp.generated.resources.downloads_wifi_only_disabled_desc
+import nuvio.composeapp.generated.resources.downloads_wifi_only_enabled_desc
+import nuvio.composeapp.generated.resources.downloads_wifi_only_title
 import nuvio.composeapp.generated.resources.episodes_season
 import nuvio.composeapp.generated.resources.episodes_specials
 import org.jetbrains.compose.resources.pluralStringResource
@@ -86,6 +94,10 @@ fun DownloadsScreen(
         DownloadsRepository.ensureLoaded()
         DownloadsRepository.uiState
     }.collectAsStateWithLifecycle()
+    val wifiOnly by remember {
+        DownloadsSettingsRepository.ensureLoaded()
+        DownloadsSettingsRepository.wifiOnly
+    }.collectAsStateWithLifecycle()
     val watchProgressState by remember {
         WatchProgressRepository.ensureLoaded()
         WatchProgressRepository.uiState
@@ -103,16 +115,33 @@ fun DownloadsScreen(
     var needsBatteryExemption by remember {
         mutableStateOf(DownloadPowerPlatform.needsBatteryOptimizationExemption())
     }
+    var isUnmeteredNetwork by remember {
+        mutableStateOf(DownloadPowerPlatform.isUnmeteredNetworkAvailable())
+    }
     val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
     LaunchedEffect(lifecycleState) {
         if (lifecycleState == Lifecycle.State.RESUMED) {
             needsBatteryExemption = DownloadPowerPlatform.needsBatteryOptimizationExemption()
+            isUnmeteredNetwork = DownloadPowerPlatform.isUnmeteredNetworkAvailable()
         }
     }
+    val hasPendingTransfers = uiState.items.any {
+        it.status == DownloadStatus.Downloading || it.status == DownloadStatus.Queued
+    }
+    LaunchedEffect(wifiOnly, hasPendingTransfers) {
+        isUnmeteredNetwork = DownloadPowerPlatform.isUnmeteredNetworkAvailable()
+        if (!wifiOnly || !hasPendingTransfers) return@LaunchedEffect
+        while (true) {
+            delay(3_000L)
+            isUnmeteredNetwork = DownloadPowerPlatform.isUnmeteredNetworkAvailable()
+        }
+    }
+    val waitingForWifi = wifiOnly && !isUnmeteredNetwork
 
     var selectedShowId by rememberSaveable(initialShowId) { mutableStateOf(initialShowId) }
     var actionsItemId by rememberSaveable { mutableStateOf<String?>(null) }
     var deleteItemId by rememberSaveable { mutableStateOf<String?>(null) }
+    var showCellularConfirmDialog by rememberSaveable { mutableStateOf(false) }
     val speeds = rememberDownloadSpeeds(uiState.items)
     val watchStatusOf = remember(watchProgressState, watchedState) {
         { item: DownloadItem -> item.watchStatus(watchProgressState) }
@@ -167,6 +196,15 @@ fun DownloadsScreen(
                 items = uiState.items,
                 speeds = speeds,
                 watchStatusOf = watchStatusOf,
+                wifiOnly = wifiOnly,
+                waitingForWifi = waitingForWifi,
+                onWifiOnlyChange = { enabled ->
+                    if (enabled) {
+                        DownloadsSettingsRepository.setWifiOnly(true)
+                    } else {
+                        showCellularConfirmDialog = true
+                    }
+                },
                 needsBatteryExemption = needsBatteryExemption,
                 onRequestBatteryExemption = {
                     if (DownloadPowerPlatform.requestBatteryExemption()) {
@@ -186,6 +224,7 @@ fun DownloadsScreen(
                     .sortedForSeriesDownloads(),
                 speeds = speeds,
                 watchStatusOf = watchStatusOf,
+                waitingForWifi = waitingForWifi,
                 onPlay = onOpenDownload,
                 onOpenActions = onOpenActions,
             )
@@ -218,6 +257,42 @@ fun DownloadsScreen(
                 deleteItemId = null
             },
             onDismiss = { deleteItemId = null },
+        )
+    }
+
+    NuvioStatusModal(
+        title = stringResource(Res.string.downloads_cellular_confirm_title),
+        message = stringResource(Res.string.downloads_cellular_confirm_message),
+        isVisible = showCellularConfirmDialog,
+        confirmText = stringResource(Res.string.downloads_cellular_confirm_action),
+        dismissText = stringResource(Res.string.action_cancel),
+        onConfirm = {
+            DownloadsSettingsRepository.setWifiOnly(false)
+            showCellularConfirmDialog = false
+        },
+        onDismiss = { showCellularConfirmDialog = false },
+    )
+}
+
+@Composable
+private fun DownloadsWifiOnlyCard(
+    wifiOnly: Boolean,
+    onWifiOnlyChange: (Boolean) -> Unit,
+) {
+    NuvioSurfaceCard(modifier = Modifier.fillMaxWidth()) {
+        SettingsSwitchRow(
+            title = stringResource(Res.string.downloads_wifi_only_title),
+            description = stringResource(
+                if (wifiOnly) {
+                    Res.string.downloads_wifi_only_enabled_desc
+                } else {
+                    Res.string.downloads_wifi_only_disabled_desc
+                },
+            ),
+            checked = wifiOnly,
+            isTablet = false,
+            horizontalPadding = NuvioTokens.Space.none,
+            onCheckedChange = onWifiOnlyChange,
         )
     }
 }
@@ -254,6 +329,9 @@ private fun LazyListScope.downloadsRootContent(
     items: List<DownloadItem>,
     speeds: Map<String, Long>,
     watchStatusOf: (DownloadItem) -> DownloadWatchStatus,
+    wifiOnly: Boolean,
+    waitingForWifi: Boolean,
+    onWifiOnlyChange: (Boolean) -> Unit,
     needsBatteryExemption: Boolean,
     onRequestBatteryExemption: () -> Unit,
     onPlay: (DownloadItem) -> Unit,
@@ -264,6 +342,12 @@ private fun LazyListScope.downloadsRootContent(
         item(key = "battery-optimization-banner") {
             DownloadsBatteryExemptionCard(onRequestBatteryExemption = onRequestBatteryExemption)
         }
+    }
+    item(key = "wifi-only-setting") {
+        DownloadsWifiOnlyCard(
+            wifiOnly = wifiOnly,
+            onWifiOnlyChange = onWifiOnlyChange,
+        )
     }
     if (items.isEmpty()) {
         item(key = "empty") {
@@ -316,6 +400,7 @@ private fun LazyListScope.downloadsRootContent(
                 item = item,
                 speedBytesPerSecond = speeds[item.id],
                 inShowPage = false,
+                waitingForWifi = waitingForWifi,
                 onToggle = item::toggleTransfer,
                 onOpenActions = { onOpenActions(item) },
             )
@@ -350,6 +435,7 @@ private fun LazyListScope.downloadsShowContent(
     episodes: List<DownloadItem>,
     speeds: Map<String, Long>,
     watchStatusOf: (DownloadItem) -> DownloadWatchStatus,
+    waitingForWifi: Boolean,
     onPlay: (DownloadItem) -> Unit,
     onOpenActions: (DownloadItem) -> Unit,
 ) {
@@ -402,6 +488,7 @@ private fun LazyListScope.downloadsShowContent(
                         item = item,
                         speedBytesPerSecond = speeds[item.id],
                         inShowPage = true,
+                        waitingForWifi = waitingForWifi,
                         onToggle = item::toggleTransfer,
                         onOpenActions = { onOpenActions(item) },
                     )

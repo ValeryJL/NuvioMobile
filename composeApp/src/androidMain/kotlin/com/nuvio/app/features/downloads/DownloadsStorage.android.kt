@@ -7,6 +7,7 @@ import com.nuvio.app.core.storage.ProfileScopedKey
 internal actual object DownloadsStorage {
     private const val preferencesName = "nuvio_downloads"
     private const val payloadKey = "downloads_payload"
+    private const val wifiOnlyKey = "downloads_wifi_only"
 
     private var preferences: SharedPreferences? = null
 
@@ -22,5 +23,15 @@ internal actual object DownloadsStorage {
             ?.edit()
             ?.putString(ProfileScopedKey.of(payloadKey), payload)
             ?.apply()
+    }
+
+    actual fun loadWifiOnly(): Boolean =
+        preferences?.getBoolean(wifiOnlyKey, true) ?: true
+
+    actual fun saveWifiOnly(enabled: Boolean) {
+        preferences
+            ?.edit()
+            ?.putBoolean(wifiOnlyKey, enabled)
+            ?.commit()
     }
 }

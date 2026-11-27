@@ -23,8 +23,15 @@ class DownloadsTransferJobService : JobService() {
     override fun onNetworkChanged(params: JobParameters) {
         val fileName = params.extras.getString(AndroidDownloadScheduler.FILE_NAME) ?: return
         val generation = params.extras.getString(AndroidDownloadScheduler.GENERATION) ?: return
+        val scheduler = DownloadsPlatformDownloader.scheduler(this)
+        if (scheduler.wifiOnlyEnabled() && params.network?.let { !isNetworkUnmetered(this, it) } == true) {
+            runs.remove(generation)?.cancel()
+            activeNetworks.remove(generation)
+            jobFinished(params, true)
+            return
+        }
         if (runs[generation]?.isActive != true) return
-        val transfer = DownloadsPlatformDownloader.scheduler(this).store.get(fileName)
+        val transfer = scheduler.store.get(fileName)
             ?.takeIf { it.generation == generation } ?: return
         // Torrent downloads use NuvioEngine sockets bound to the system network; re-launching
         // on transient network ticks tears down the engine session unnecessarily.
@@ -41,6 +48,17 @@ class DownloadsTransferJobService : JobService() {
         val generation = params.extras.getString(AndroidDownloadScheduler.GENERATION) ?: return false
         val transfer = scheduler.store.get(fileName)?.takeIf { it.generation == generation } ?: return false
         if (!scheduler.isActive(transfer)) return false
+        if (!scheduler.isNetworkAllowedNow()) {
+            scheduler.scheduleSystemJob(transfer)
+            return false
+        }
+        if (scheduler.preferForegroundService) {
+            DownloadsForegroundService.markPending(transfer.generation)
+            if (DownloadsForegroundService.startOrSync(this)) {
+                return false
+            }
+            DownloadsForegroundService.clearPending(transfer.generation)
+        }
         DownloadsLiveStatusPlatform.initialize(this)
         setNotification(params, DownloadsLiveStatusPlatform.notificationId(transfer.item.id),
             DownloadsLiveStatusPlatform.buildNotification(this, transfer.item), JOB_END_NOTIFICATION_POLICY_REMOVE)

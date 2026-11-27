@@ -198,6 +198,8 @@ internal actual object DownloadsPlatformDownloader {
         }
     }
 
+    actual fun onWifiOnlyChanged(wifiOnly: Boolean) {}
+
     actual fun openDownloadsDirectory(): Boolean {
         val url = NSURL.fileURLWithPath(downloadsDirectoryPath())
         UIApplication.sharedApplication.openURL(
@@ -453,9 +455,11 @@ private suspend fun performDownloadRequest(
         cachePolicy = NSURLRequestReloadIgnoringLocalCacheData,
         timeoutInterval = DOWNLOAD_REQUEST_TIMEOUT_SECONDS,
     )
+    DownloadsSettingsRepository.ensureLoaded()
+    val allowCellular = !DownloadsSettingsRepository.wifiOnly.value
     nativeRequest.setHTTPMethod("GET")
-    nativeRequest.setAllowsCellularAccess(true)
-    nativeRequest.setAllowsExpensiveNetworkAccess(true)
+    nativeRequest.setAllowsCellularAccess(allowCellular)
+    nativeRequest.setAllowsExpensiveNetworkAccess(allowCellular)
     nativeRequest.setAllowsConstrainedNetworkAccess(true)
     request.sourceHeaders.forEach { (key, value) ->
         nativeRequest.setValue(value, forHTTPHeaderField = key)
@@ -474,8 +478,8 @@ private suspend fun performDownloadRequest(
         timeoutIntervalForRequest = DOWNLOAD_REQUEST_TIMEOUT_SECONDS
         timeoutIntervalForResource = DOWNLOAD_RESOURCE_TIMEOUT_SECONDS
         waitsForConnectivity = true
-        allowsCellularAccess = true
-        allowsExpensiveNetworkAccess = true
+        allowsCellularAccess = allowCellular
+        allowsExpensiveNetworkAccess = allowCellular
         allowsConstrainedNetworkAccess = true
     }
     val session = NSURLSession.sessionWithConfiguration(

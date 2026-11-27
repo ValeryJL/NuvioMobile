@@ -19,6 +19,7 @@ class DownloadsTransferWorker(context: Context, parameters: WorkerParameters) : 
         val generation = inputData.getString(AndroidDownloadScheduler.GENERATION) ?: return Result.failure()
         val transfer = scheduler.store.get(fileName)?.takeIf { it.generation == generation } ?: return Result.success()
         if (!scheduler.isActive(transfer)) return Result.success()
+        if (!scheduler.isNetworkAllowedNow()) return Result.retry()
         DownloadsLiveStatusPlatform.initialize(applicationContext)
         try {
             if (AppFeaturePolicy.downloadForegroundServiceEnabled) {

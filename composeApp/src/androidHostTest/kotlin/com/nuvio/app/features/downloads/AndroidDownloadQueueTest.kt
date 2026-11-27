@@ -22,8 +22,13 @@ class AndroidDownloadQueueTest {
     fun setUp() {
         val context = RuntimeEnvironment.getApplication()
         DownloadsStorage.initialize(context)
+        DownloadsStorage.saveWifiOnly(true)
+        DownloadsSettingsRepository.resetForTesting()
         DownloadsPlatformDownloader.initialize(context)
-        DownloadsPlatformDownloader.scheduler(context).preferForegroundService = false
+        DownloadsPlatformDownloader.scheduler(context).apply {
+            preferForegroundService = false
+            unmeteredNetworkAvailable = { true }
+        }
         DownloadsLiveStatusPlatform.initialize(context)
         DownloadsRepository.clearLocalState()
     }
@@ -35,8 +40,12 @@ class AndroidDownloadQueueTest {
             .map { it.id }
             .forEach(DownloadsRepository::cancelDownload)
         DownloadsRepository.clearLocalState()
-        DownloadsPlatformDownloader.scheduler(context).preferForegroundService =
-            AppFeaturePolicy.downloadForegroundServiceEnabled
+        DownloadsStorage.saveWifiOnly(true)
+        DownloadsSettingsRepository.resetForTesting()
+        DownloadsPlatformDownloader.scheduler(context).apply {
+            preferForegroundService = AppFeaturePolicy.downloadForegroundServiceEnabled
+            unmeteredNetworkAvailable = { isAndroidUnmeteredNetworkAvailable(context) }
+        }
     }
 
     @Test

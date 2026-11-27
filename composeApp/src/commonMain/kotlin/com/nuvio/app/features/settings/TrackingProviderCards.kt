@@ -64,6 +64,7 @@ import com.nuvio.app.core.ui.DialogButtons
 import com.nuvio.app.core.ui.DialogButtonStyle
 import com.nuvio.app.core.ui.DialogSurface
 import com.nuvio.app.core.ui.NuvioLoadingIndicator
+import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.nuvio
 import com.nuvio.app.features.profiles.ProfileRepository
@@ -80,6 +81,8 @@ import com.nuvio.app.features.trakt.TraktAuthRepository
 import com.nuvio.app.features.trakt.TraktAuthUiState
 import com.nuvio.app.features.trakt.TraktBrandAsset
 import com.nuvio.app.features.trakt.TraktConnectionMode
+import com.nuvio.app.features.trakt.TraktContinueWatchingSync
+import com.nuvio.app.features.trakt.TraktProgressRepository
 import com.nuvio.app.features.trakt.traktBrandPainter
 import com.nuvio.app.features.watchprogress.WatchProgressSourceCoordinator
 import kotlinx.coroutines.launch
@@ -121,6 +124,9 @@ import nuvio.composeapp.generated.resources.settings_trakt_missing_credentials
 import nuvio.composeapp.generated.resources.settings_trakt_open_login
 import nuvio.composeapp.generated.resources.settings_trakt_save_actions_description
 import nuvio.composeapp.generated.resources.settings_trakt_sign_in_description
+import nuvio.composeapp.generated.resources.settings_trakt_sync_continue_watching
+import nuvio.composeapp.generated.resources.trakt_continue_watching_sync_done
+import nuvio.composeapp.generated.resources.trakt_continue_watching_sync_failed
 import org.jetbrains.compose.resources.stringResource
 
 internal enum class TrackingBrand(val displayName: String) {
@@ -216,6 +222,15 @@ private fun TraktProviderCard(
     uiState: TraktAuthUiState,
     modifier: Modifier,
 ) {
+    val scope = rememberCoroutineScope()
+    val isTraktSyncing by TraktContinueWatchingSync.isSyncing.collectAsStateWithLifecycle()
+    val traktProgressState by remember {
+        TraktProgressRepository.ensureLoaded()
+        TraktProgressRepository.uiState
+    }.collectAsStateWithLifecycle()
+    val syncDoneText = stringResource(Res.string.trakt_continue_watching_sync_done)
+    val syncFailedText = stringResource(Res.string.trakt_continue_watching_sync_failed)
+
     TrackingProviderCard(
         brand = TrackingBrand.TRAKT,
         mode = uiState.mode.toTrackingConnectionCardMode(),
@@ -232,17 +247,25 @@ private fun TraktProviderCard(
         connectLabel = stringResource(Res.string.settings_trakt_connect),
         openLoginLabel = stringResource(Res.string.settings_trakt_open_login),
         disconnectLabel = stringResource(Res.string.settings_trakt_disconnect),
+        syncLabel = stringResource(Res.string.settings_trakt_sync_continue_watching),
+        isSyncing = isTraktSyncing,
         missingCredentialsMessage = stringResource(Res.string.settings_trakt_missing_credentials),
         statusMessage = uiState.statusMessage.takeUnless {
             uiState.mode == TraktConnectionMode.CONNECTED
         },
-        errorMessage = uiState.errorMessage,
+        errorMessage = uiState.errorMessage ?: traktProgressState.errorMessage,
         onConnectRequested = TraktAuthRepository::onConnectRequested,
         onResumeAuthorization = {
             TraktAuthRepository.pendingAuthorizationUrl()
                 ?: TraktAuthRepository.onConnectRequested()
         },
         onCancelAuthorization = TraktAuthRepository::onCancelAuthorization,
+        onSyncRequested = {
+            scope.launch {
+                val ok = TraktContinueWatchingSync.forceSync()
+                NuvioToastController.show(if (ok) syncDoneText else syncFailedText)
+            }
+        },
         onDisconnect = TraktAuthRepository::onDisconnectRequested,
         modifier = modifier,
     )

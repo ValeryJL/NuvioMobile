@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -22,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,9 +31,14 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.ui.DialogOption
 import com.nuvio.app.core.ui.DialogSurface
+import com.nuvio.app.core.ui.NuvioLoadingIndicator
+import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.features.home.components.ContinueWatchingStylePreview
+import com.nuvio.app.features.trakt.TraktAuthRepository
+import com.nuvio.app.features.trakt.TraktContinueWatchingSync
 import com.nuvio.app.features.watchprogress.ContinueWatchingClickAction
 import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingSectionStyle
@@ -75,6 +82,12 @@ import nuvio.composeapp.generated.resources.settings_continue_watching_up_next_d
 import nuvio.composeapp.generated.resources.settings_continue_watching_up_next_title
 import nuvio.composeapp.generated.resources.settings_continue_watching_use_episode_thumbnails_description
 import nuvio.composeapp.generated.resources.settings_continue_watching_use_episode_thumbnails_title
+import nuvio.composeapp.generated.resources.settings_trakt_sync_continue_watching
+import nuvio.composeapp.generated.resources.settings_trakt_sync_continue_watching_desc
+import nuvio.composeapp.generated.resources.settings_trakt_sync_continue_watching_syncing
+import nuvio.composeapp.generated.resources.trakt_continue_watching_sync_done
+import nuvio.composeapp.generated.resources.trakt_continue_watching_sync_failed
+import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.stringResource
 
@@ -229,6 +242,44 @@ internal fun LazyListScope.continueWatchingSettingsContent(
                 },
                 onDismiss = { showSortModeSheet = false },
             )
+        }
+    }
+    item(key = "trakt_force_sync") {
+        val traktAuthenticated by remember {
+            TraktAuthRepository.ensureLoaded()
+            TraktAuthRepository.isAuthenticated
+        }.collectAsStateWithLifecycle()
+        if (traktAuthenticated) {
+            val scope = rememberCoroutineScope()
+            val isSyncing by TraktContinueWatchingSync.isSyncing.collectAsStateWithLifecycle()
+            val syncDoneText = stringResource(Res.string.trakt_continue_watching_sync_done)
+            val syncFailedText = stringResource(Res.string.trakt_continue_watching_sync_failed)
+            SettingsGroup(isTablet = isTablet) {
+                SettingsNavigationRow(
+                    title = stringResource(Res.string.settings_trakt_sync_continue_watching),
+                    description = stringResource(
+                        if (isSyncing) {
+                            Res.string.settings_trakt_sync_continue_watching_syncing
+                        } else {
+                            Res.string.settings_trakt_sync_continue_watching_desc
+                        },
+                    ),
+                    icon = Icons.Rounded.Sync,
+                    enabled = !isSyncing,
+                    isTablet = isTablet,
+                    trailingContent = {
+                        if (isSyncing) {
+                            NuvioLoadingIndicator(size = if (isTablet) 24.dp else 20.dp)
+                        }
+                    },
+                    onClick = {
+                        scope.launch {
+                            val ok = TraktContinueWatchingSync.forceSync()
+                            NuvioToastController.show(if (ok) syncDoneText else syncFailedText)
+                        }
+                    },
+                )
+            }
         }
     }
 }

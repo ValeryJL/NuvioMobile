@@ -17,17 +17,28 @@ actual object AuthStorage {
         preferences?.getString(KEY_ANONYMOUS_USER_ID, null)
 
     actual fun saveAnonymousUserId(userId: String) {
-        preferences?.edit()?.putString(KEY_ANONYMOUS_USER_ID, userId)?.apply()
+        preferences?.edit()?.putString(KEY_ANONYMOUS_USER_ID, userId)?.commit()
     }
 
     actual fun clearAnonymousUserId() {
-        preferences?.edit()?.remove(KEY_ANONYMOUS_USER_ID)?.apply()
+        preferences?.edit()?.remove(KEY_ANONYMOUS_USER_ID)?.commit()
     }
 
     actual fun loadFlag(key: String): Boolean =
         preferences?.getBoolean(key, false) == true
 
     actual fun saveFlag(key: String, value: Boolean) {
-        preferences?.edit()?.putBoolean(key, value)?.apply()
+        preferences?.edit()?.putBoolean(key, value)?.commit()
+    }
+
+    actual fun loadString(key: String): String? =
+        preferences?.getString(key, null)
+
+    actual fun saveString(key: String, value: String) {
+        preferences?.edit()?.putString(key, value)?.commit()
+    }
+
+    actual fun remove(key: String) {
+        preferences?.edit()?.remove(key)?.commit()
     }
 }

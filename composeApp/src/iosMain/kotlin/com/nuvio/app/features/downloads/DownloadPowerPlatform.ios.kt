@@ -4,4 +4,6 @@ internal actual object DownloadPowerPlatform {
     actual fun needsBatteryOptimizationExemption(): Boolean = false
 
     actual fun requestBatteryExemption(): Boolean = false
+
+    actual fun isUnmeteredNetworkAvailable(): Boolean = true
 }

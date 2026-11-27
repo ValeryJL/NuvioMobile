@@ -5,6 +5,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
@@ -30,12 +33,14 @@ class DownloadsForegroundService : Service() {
     private val runs = ConcurrentHashMap<String, Job>()
     private var wakeLockGuard: AndroidTransferWakeLockGuard? = null
     private var lastNotificationUpdateAt = 0L
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         activeInstance = this
+        registerConnectivityCallback()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -49,6 +54,11 @@ class DownloadsForegroundService : Service() {
         if (activeTransfers.isEmpty()) {
             promoteToForeground(DownloadsLiveStatusPlatform.buildIdleForegroundNotification(this))
             stopForegroundAndSelf(startId)
+            return START_NOT_STICKY
+        }
+        if (!scheduler.isNetworkAllowedNow()) {
+            promoteToForeground(DownloadsLiveStatusPlatform.buildIdleForegroundNotification(this))
+            suspendRunsForWifiOnly(scheduler, activeTransfers, startId)
             return START_NOT_STICKY
         }
 
@@ -86,6 +96,7 @@ class DownloadsForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        unregisterConnectivityCallback()
         if (activeInstance === this) {
             activeInstance = null
         }
@@ -96,6 +107,61 @@ class DownloadsForegroundService : Service() {
         releaseWakeLock()
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    private fun registerConnectivityCallback() {
+        val connectivityManager = getSystemService(ConnectivityManager::class.java) ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                evaluateNetworkPolicy()
+            }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                evaluateNetworkPolicy()
+            }
+
+            override fun onLost(network: Network) {
+                evaluateNetworkPolicy()
+            }
+        }
+        runCatching {
+            connectivityManager.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        }
+    }
+
+    private fun unregisterConnectivityCallback() {
+        val callback = networkCallback ?: return
+        networkCallback = null
+        runCatching {
+            getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(callback)
+        }
+    }
+
+    private fun evaluateNetworkPolicy() {
+        val scheduler = runCatching { DownloadsPlatformDownloader.scheduler(applicationContext) }.getOrNull() ?: return
+        if (scheduler.isNetworkAllowedNow()) return
+        serviceScope.launch {
+            if (!scheduler.isNetworkAllowedNow()) {
+                suspendRunsForWifiOnly(scheduler, activeTransfersIn(scheduler))
+            }
+        }
+    }
+
+    private fun suspendRunsForWifiOnly(
+        scheduler: AndroidDownloadScheduler,
+        activeTransfers: List<AndroidDownloadTransfer>,
+        startId: Int? = null,
+    ) {
+        runs.values.forEach { it.cancel() }
+        runs.clear()
+        activeTrackedGenerations.clear()
+        hostedDownloadIds.clear()
+        activeTransfers.forEach { transfer ->
+            pendingStartSinceMs.remove(transfer.generation)
+            scheduler.scheduleSystemJob(transfer)
+        }
+        stopForegroundAndSelf(startId)
     }
 
     private fun promoteToForeground(notification: android.app.Notification) {
@@ -170,6 +236,10 @@ class DownloadsForegroundService : Service() {
                 }
             }
             if (remaining.isNotEmpty()) {
+                if (!scheduler.isNetworkAllowedNow()) {
+                    suspendRunsForWifiOnly(scheduler, remaining)
+                    return@launch
+                }
                 syncHostedIds(remaining)
                 refreshForegroundNotification(scheduler, force = true)
                 syncRunners(scheduler, remaining)
@@ -190,6 +260,10 @@ class DownloadsForegroundService : Service() {
         }
         val remaining = activeTransfersIn(scheduler)
         if (remaining.isNotEmpty()) {
+            if (!scheduler.isNetworkAllowedNow()) {
+                suspendRunsForWifiOnly(scheduler, remaining)
+                return
+            }
             syncHostedIds(remaining)
             refreshForegroundNotification(scheduler, force = true)
             syncRunners(scheduler, remaining)
@@ -315,6 +389,10 @@ class DownloadsForegroundService : Service() {
             instance.serviceScope.launch {
                 val remaining = instance.activeTransfersIn(scheduler)
                 if (remaining.isNotEmpty()) {
+                    if (!scheduler.isNetworkAllowedNow()) {
+                        instance.suspendRunsForWifiOnly(scheduler, remaining)
+                        return@launch
+                    }
                     instance.syncHostedIds(remaining)
                     instance.refreshForegroundNotification(scheduler, force = true)
                     instance.syncRunners(scheduler, remaining)

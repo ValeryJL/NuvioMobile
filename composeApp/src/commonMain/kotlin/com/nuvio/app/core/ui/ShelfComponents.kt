@@ -68,6 +68,7 @@ fun <T> NuvioShelfSection(
     itemSpacing: Dp = 10.dp,
     onViewAllClick: (() -> Unit)? = null,
     viewAllPillSize: NuvioViewAllPillSize = NuvioViewAllPillSize.Default,
+    headerAction: (@Composable () -> Unit)? = null,
     key: ((T) -> Any)? = null,
     animatePlacement: Boolean = false,
     state: LazyListState = rememberLazyListState(),
@@ -87,6 +88,7 @@ fun <T> NuvioShelfSection(
                 modifier = Modifier.padding(horizontal = headerHorizontalPadding),
                 onViewAllClick = onViewAllClick,
                 viewAllPillSize = viewAllPillSize,
+                headerAction = headerAction,
             )
         }
         LazyRow(
@@ -276,6 +278,7 @@ private fun NuvioShelfSectionHeader(
     modifier: Modifier = Modifier,
     onViewAllClick: (() -> Unit)? = null,
     viewAllPillSize: NuvioViewAllPillSize = NuvioViewAllPillSize.Default,
+    headerAction: (@Composable () -> Unit)? = null,
 ) {
     val tokens = MaterialTheme.nuvio
     Column(
@@ -294,18 +297,21 @@ private fun NuvioShelfSectionHeader(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            val viewAllPlaceholderModifier = if (onViewAllClick == null) {
-                Modifier
-                    .alpha(0f)
-                    .clearAndSetSemantics { }
-            } else {
-                Modifier
+            headerAction?.invoke()
+            if (onViewAllClick != null || headerAction == null) {
+                val viewAllPlaceholderModifier = if (onViewAllClick == null) {
+                    Modifier
+                        .alpha(0f)
+                        .clearAndSetSemantics { }
+                } else {
+                    Modifier
+                }
+                NuvioViewAllPill(
+                    onClick = onViewAllClick,
+                    size = viewAllPillSize,
+                    modifier = viewAllPlaceholderModifier,
+                )
             }
-            NuvioViewAllPill(
-                onClick = onViewAllClick,
-                size = viewAllPillSize,
-                modifier = viewAllPlaceholderModifier,
-            )
         }
     }
 }

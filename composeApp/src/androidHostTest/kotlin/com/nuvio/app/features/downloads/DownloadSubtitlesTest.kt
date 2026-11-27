@@ -66,7 +66,9 @@ class DownloadSubtitlesTest {
                 }
             }
         }
-        val scheduler = AndroidDownloadScheduler(context)
+        val scheduler = AndroidDownloadScheduler(context).apply {
+            unmeteredNetworkAvailable = { true }
+        }
         val item = downloadItem(server.url("/video").toString()).copy(
             fileName = "offline-episode.mkv",
             contentType = "series",
@@ -121,7 +123,9 @@ class DownloadSubtitlesTest {
                     else -> MockResponse().setResponseCode(503)
                 }
             }
-            val scheduler = AndroidDownloadScheduler(RuntimeEnvironment.getApplication())
+            val scheduler = AndroidDownloadScheduler(RuntimeEnvironment.getApplication()).apply {
+                unmeteredNetworkAvailable = { true }
+            }
             val item = downloadItem(server.url("/video").toString()).copy(
                 fileName = "partial-subtitles.mkv",
                 subtitleRequests = listOf(SubtitleAddonRequest(server.url("/failed-addon").toString(), "failed", "Failed addon")),

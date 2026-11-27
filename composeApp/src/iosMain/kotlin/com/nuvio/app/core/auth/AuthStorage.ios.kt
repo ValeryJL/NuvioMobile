@@ -22,4 +22,15 @@ actual object AuthStorage {
     actual fun saveFlag(key: String, value: Boolean) {
         NSUserDefaults.standardUserDefaults.setBool(value, forKey = key)
     }
+
+    actual fun loadString(key: String): String? =
+        NSUserDefaults.standardUserDefaults.stringForKey(key)
+
+    actual fun saveString(key: String, value: String) {
+        NSUserDefaults.standardUserDefaults.setObject(value, forKey = key)
+    }
+
+    actual fun remove(key: String) {
+        NSUserDefaults.standardUserDefaults.removeObjectForKey(key)
+    }
 }

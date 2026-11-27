@@ -29,9 +29,12 @@ internal actual object DownloadsPlatformDownloader {
 
     @Synchronized
     internal fun scheduler(context: Context): AndroidDownloadScheduler {
-        appContext = context.applicationContext
-        DownloadPowerPlatform.initialize(context.applicationContext)
-        return downloadScheduler ?: AndroidDownloadScheduler(context.applicationContext).also { downloadScheduler = it }
+        val applicationContext = context.applicationContext
+        appContext = applicationContext
+        DownloadsStorage.initialize(applicationContext)
+        DownloadsSettingsRepository.ensureLoaded()
+        DownloadPowerPlatform.initialize(applicationContext)
+        return downloadScheduler ?: AndroidDownloadScheduler(applicationContext).also { downloadScheduler = it }
     }
 
     internal fun managedTransfers(): List<AndroidDownloadTransfer> =
@@ -121,6 +124,10 @@ internal actual object DownloadsPlatformDownloader {
         val downloadsDir = File(context.filesDir, "downloads")
         val localFile = File(downloadsDir, fileName)
         return localFile.takeIf { it.exists() }?.toURI()?.toString()
+    }
+
+    actual fun onWifiOnlyChanged(wifiOnly: Boolean) {
+        downloadScheduler?.applyNetworkPolicy()
     }
 
     actual fun openDownloadsDirectory(): Boolean {

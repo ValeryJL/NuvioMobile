@@ -2648,4 +2648,17 @@
     <string name="downloads_battery_banner_title">Battery optimization active</string>
     <string name="downloads_battery_banner_message">Allow unrestricted background battery usage so downloads do not stop when locking the screen.</string>
     <string name="downloads_battery_banner_action">Allow</string>
+    <string name="downloads_wifi_only_title">Wi-Fi only downloads</string>
+    <string name="downloads_wifi_only_enabled_desc">Only download over unmetered Wi-Fi connections</string>
+    <string name="downloads_wifi_only_disabled_desc">Downloads can also use mobile data</string>
+    <string name="downloads_cellular_confirm_title">Allow mobile data downloads?</string>
+    <string name="downloads_cellular_confirm_message">Downloading movies, episodes, and torrents over mobile data can use large amounts of data quickly. Do you want to turn off Wi-Fi only mode?</string>
+    <string name="downloads_cellular_confirm_action">Use mobile data</string>
+    <string name="downloads_status_waiting_wifi">Waiting for Wi-Fi</string>
+    <string name="downloads_pause_reason_wifi_only">Waiting for Wi-Fi (Wi-Fi only mode is active)</string>
+    <string name="settings_trakt_sync_continue_watching">Sync Continue Watching</string>
+    <string name="settings_trakt_sync_continue_watching_desc">Clear cached Trakt progress and pull the latest progress and history now</string>
+    <string name="settings_trakt_sync_continue_watching_syncing">Syncing Continue Watching with Trakt…</string>
+    <string name="trakt_continue_watching_sync_done">Continue Watching synced with Trakt</string>
+    <string name="trakt_continue_watching_sync_failed">Could not sync Continue Watching with Trakt</string>
 </resources>

@@ -2,6 +2,7 @@ package com.nuvio.app.features.downloads
 
 import android.app.Notification
 import android.content.Intent
+import android.net.NetworkCapabilities
 import com.nuvio.app.core.build.AppFeaturePolicy
 import org.junit.After
 import org.junit.Assume.assumeTrue
@@ -26,9 +27,14 @@ class DownloadsForegroundServiceTest {
         assumeTrue(AppFeaturePolicy.downloadForegroundServiceEnabled)
         val app = RuntimeEnvironment.getApplication()
         DownloadsStorage.initialize(app)
+        DownloadsStorage.saveWifiOnly(true)
+        DownloadsSettingsRepository.resetForTesting()
         DownloadsPlatformDownloader.initialize(app)
         DownloadsLiveStatusPlatform.initialize(app)
-        DownloadsPlatformDownloader.scheduler(app).preferForegroundService = true
+        DownloadsPlatformDownloader.scheduler(app).apply {
+            preferForegroundService = true
+            unmeteredNetworkAvailable = { true }
+        }
     }
 
     @After
@@ -37,7 +43,10 @@ class DownloadsForegroundServiceTest {
         val app = RuntimeEnvironment.getApplication()
         val scheduler = DownloadsPlatformDownloader.scheduler(app)
         scheduler.store.transfers.value.keys.toList().forEach(scheduler::remove)
+        DownloadsStorage.saveWifiOnly(true)
+        DownloadsSettingsRepository.resetForTesting()
         scheduler.preferForegroundService = AppFeaturePolicy.downloadForegroundServiceEnabled
+        scheduler.unmeteredNetworkAvailable = { isAndroidUnmeteredNetworkAvailable(app) }
     }
 
     @Test
@@ -78,5 +87,26 @@ class DownloadsForegroundServiceTest {
         } finally {
             controller.destroy()
         }
+    }
+
+    @Test
+    fun wifiOnlySkipsForegroundServiceOnMeteredNetworkAndPromotesWhenCellularAllowed() {
+        val app = RuntimeEnvironment.getApplication()
+        val scheduler = DownloadsPlatformDownloader.scheduler(app)
+        scheduler.unmeteredNetworkAvailable = { false }
+        val item = downloadItem().copy(id = "fgs-wifi-1", fileName = "fgs-wifi-1.mkv", title = "Wifi Only Movie")
+
+        val transfer = scheduler.enqueue(item)
+
+        assertNull(shadowOf(app).nextStartedService)
+        val pendingJob = assertNotNull(scheduler.jobScheduler().getPendingJob(transfer.jobId))
+        assertTrue(pendingJob.requiredNetwork?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == true)
+
+        DownloadsSettingsRepository.setWifiOnly(false)
+
+        assertNull(scheduler.jobScheduler().getPendingJob(transfer.jobId))
+        val startedIntent = assertNotNull(shadowOf(app).nextStartedService)
+        assertEquals(DownloadsForegroundService::class.java.name, startedIntent.component?.className)
+        assertEquals(DownloadsForegroundService.ACTION_SYNC_DOWNLOADS, startedIntent.action)
     }
 }

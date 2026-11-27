@@ -2,10 +2,13 @@ package com.nuvio.app.features.downloads
 
 import android.app.job.JobParameters
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.PowerManager
 import androidx.annotation.RequiresApi
+import java.io.IOException
 
 /**
  * Keeps CPU and Wi-Fi radios awake while an active background download transfer is executing,
@@ -52,6 +55,27 @@ internal fun acquireTransferWakeLocks(context: Context, tag: String): AndroidTra
     }.getOrNull()
 
     return AndroidTransferWakeLockGuard(wakeLock = wakeLock, wifiLock = wifiLock)
+}
+
+internal class WifiOnlyRequiredException :
+    IOException("Wi-Fi connection is required while Wi-Fi only downloads are enabled")
+
+internal fun isAndroidUnmeteredNetworkAvailable(context: Context): Boolean {
+    val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        ?: return true
+    val activeNetwork = connectivityManager.activeNetwork ?: return false
+    val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
+    if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return false
+    return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) ||
+        !connectivityManager.isActiveNetworkMetered
+}
+
+internal fun isNetworkUnmetered(context: Context, network: android.net.Network): Boolean {
+    val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        ?: return true
+    val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+    if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return false
+    return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
 }
 
 internal object AndroidDownloadStopReasons {

@@ -18,4 +18,9 @@ internal actual object DownloadPowerPlatform {
         val context = appContext ?: return false
         return AndroidBatteryOptimization.requestIgnoreBatteryOptimizations(context)
     }
+
+    actual fun isUnmeteredNetworkAvailable(): Boolean {
+        val context = appContext ?: return true
+        return isAndroidUnmeteredNetworkAvailable(context)
+    }
 }

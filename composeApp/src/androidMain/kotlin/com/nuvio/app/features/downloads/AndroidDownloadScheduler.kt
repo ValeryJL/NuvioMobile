@@ -48,10 +48,20 @@ internal class AndroidDownloadScheduler(
 ) {
     val store = AndroidDownloadStore(File(context.filesDir, "download-transfers"))
     val directory = File(context.filesDir, "downloads")
+    internal var wifiOnlyEnabled: () -> Boolean = {
+        DownloadsSettingsRepository.ensureLoaded()
+        DownloadsSettingsRepository.wifiOnly.value
+    }
+    internal var unmeteredNetworkAvailable: () -> Boolean = {
+        isAndroidUnmeteredNetworkAvailable(context)
+    }
     private val locks = ConcurrentHashMap<String, Mutex>()
     private val activeExecutions = ConcurrentHashMap.newKeySet<String>()
     private val activeJobs = ConcurrentHashMap<String, Job>()
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    internal fun isNetworkAllowedNow(): Boolean =
+        !wifiOnlyEnabled() || unmeteredNetworkAvailable()
 
     fun enqueue(item: DownloadItem, forceRecreate: Boolean = false): AndroidDownloadTransfer {
         val previous = store.get(item.fileName)
@@ -61,6 +71,7 @@ internal class AndroidDownloadScheduler(
             cancelScheduled(previous)
         }
         val transfer = store.begin(item, forceNewJob = forceRecreate)
+        val networkAllowed = isNetworkAllowedNow()
         val existing = !forceRecreate && previous?.generation == transfer.generation
         val alreadyRunning = existing && (
             activeExecutions.contains(transfer.generation) ||
@@ -69,7 +80,7 @@ internal class AndroidDownloadScheduler(
             )
         if (alreadyRunning) return transfer
 
-        if (preferForegroundService) {
+        if (preferForegroundService && networkAllowed) {
             DownloadsForegroundService.markPending(transfer.generation)
             if (DownloadsForegroundService.startOrSync(context)) {
                 cancelScheduled(transfer)
@@ -83,15 +94,20 @@ internal class AndroidDownloadScheduler(
     }
 
     internal fun scheduleSystemJob(transfer: AndroidDownloadTransfer) {
+        val wifiOnly = wifiOnlyEnabled()
         try {
             if (Build.VERSION.SDK_INT >= 34) {
-                check(jobScheduler().schedule(buildJob(transfer)) == JobScheduler.RESULT_SUCCESS) {
+                check(jobScheduler().schedule(buildJob(transfer, wifiOnly)) == JobScheduler.RESULT_SUCCESS) {
                     "Android could not start the download. Open the app and try again."
                 }
             } else {
                 val work = OneTimeWorkRequestBuilder<DownloadsTransferWorker>()
                     .setInputData(workDataOf(FILE_NAME to transfer.item.fileName, GENERATION to transfer.generation))
-                    .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                    .setConstraints(
+                        Constraints.Builder()
+                            .setRequiredNetworkType(if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
+                            .build(),
+                    )
                     .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
                     .build()
                 val operation = WorkManager.getInstance(context).enqueueUniqueWork(
@@ -114,10 +130,13 @@ internal class AndroidDownloadScheduler(
     }
 
     @RequiresApi(34)
-    internal fun buildJob(transfer: AndroidDownloadTransfer): JobInfo =
+    internal fun buildJob(
+        transfer: AndroidDownloadTransfer,
+        wifiOnly: Boolean = wifiOnlyEnabled(),
+    ): JobInfo =
         JobInfo.Builder(transfer.jobId, ComponentName(context, DownloadsTransferJobService::class.java))
             .setUserInitiated(true)
-            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+            .setRequiredNetworkType(if (wifiOnly) JobInfo.NETWORK_TYPE_UNMETERED else JobInfo.NETWORK_TYPE_ANY)
             .setPersisted(true)
             .setEstimatedNetworkBytes(transfer.item.totalBytes ?: JobInfo.NETWORK_BYTES_UNKNOWN.toLong(), 0L)
             .setBackoffCriteria(10_000L, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
@@ -192,6 +211,9 @@ internal class AndroidDownloadScheduler(
         val stopDetail = transfer.lastStopReason
         if (stopDetail != null) {
             val (category, _) = DownloadPauseReasons.parseStopDetail(stopDetail)
+            if (category == DownloadPauseReasons.STOP_CATEGORY_CONNECTIVITY && wifiOnlyEnabled()) {
+                return transfer.item
+            }
             val stoppedAt = transfer.lastStoppedAtEpochMs ?: transfer.item.updatedAtEpochMs
             val isSystemBlocked = category == DownloadPauseReasons.STOP_CATEGORY_BACKGROUND_RESTRICTION ||
                 category == DownloadPauseReasons.STOP_CATEGORY_APP_STANDBY
@@ -282,6 +304,28 @@ internal class AndroidDownloadScheduler(
         else WorkManager.getInstance(context).cancelUniqueWork(workName(transfer))
     }
 
+    internal fun applyNetworkPolicy() {
+        val networkAllowed = isNetworkAllowedNow()
+        val activeTransfers = store.transfers.value.values.filter { it.item.status == DownloadStatus.Downloading }
+        activeTransfers.forEach { transfer ->
+            cancelScheduled(transfer)
+            if (!networkAllowed) {
+                activeJobs.remove(transfer.generation)?.cancel()
+                DownloadsForegroundService.cancelGeneration(transfer.generation)
+                scheduleSystemJob(transfer)
+            } else if (preferForegroundService) {
+                DownloadsForegroundService.markPending(transfer.generation)
+                if (!DownloadsForegroundService.startOrSync(context)) {
+                    DownloadsForegroundService.clearPending(transfer.generation)
+                    scheduleSystemJob(transfer)
+                }
+            } else {
+                scheduleSystemJob(transfer)
+            }
+        }
+        DownloadsForegroundService.syncIfRunning(context)
+    }
+
     suspend fun execute(
         transfer: AndroidDownloadTransfer,
         network: Network? = null,
@@ -312,17 +356,26 @@ internal class AndroidDownloadScheduler(
         }
         val lockGuard = acquireTransferWakeLocks(context, "nuvio:download:${transfer.jobId}")
         try {
+            if (!isNetworkAllowedNow()) {
+                throw WifiOnlyRequiredException()
+            }
             if (isTorrent && (!AppFeaturePolicy.p2pEnabled || !DownloadsPlatformDownloader.supportsTorrentDownloads)) {
                 throw IllegalStateException("Torrent downloads are not supported on this build")
             }
             DownloadSubtitles.prepare(transfer.item, destination.toURI().toString())
             currentCoroutineContext().ensureActive()
             if (!isActive(transfer)) return@withLock false
+            if (!isNetworkAllowedNow()) {
+                throw WifiOnlyRequiredException()
+            }
             var lastProgressAt = 0L
             val onHeadersCallback: (Long?, String?) -> Unit = { total, validator ->
                 updateActive(transfer) { it.copy(validator = validator, item = it.item.copy(totalBytes = total)) }
             }
             val onProgressCallback: (Long, Long?) -> Unit = { bytes, total ->
+                if (!isNetworkAllowedNow()) {
+                    throw WifiOnlyRequiredException()
+                }
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastProgressAt >= 1_000L || bytes == total) {
                     lastProgressAt = now
@@ -372,6 +425,20 @@ internal class AndroidDownloadScheduler(
                 ))
             }
             cleanupTorrentArtifactsIfUnused(transfer.item.torrentInfoHash)
+            false
+        } catch (wifiRequired: WifiOnlyRequiredException) {
+            if (isActive(transfer)) {
+                updateActive(transfer) {
+                    it.copy(
+                        lastStopReason = DownloadPauseReasons.encodeStopDetail(
+                            DownloadPauseReasons.STOP_CATEGORY_CONNECTIVITY,
+                            "WIFI_ONLY",
+                        ),
+                        lastStoppedAtEpochMs = System.currentTimeMillis(),
+                    )
+                }
+                scheduleSystemJob(transfer)
+            }
             false
         } catch (cancelled: CancellationException) {
             throw cancelled

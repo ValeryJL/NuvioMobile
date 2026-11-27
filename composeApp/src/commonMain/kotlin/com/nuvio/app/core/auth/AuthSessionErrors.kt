@@ -32,7 +32,12 @@ internal inline fun <reified T : Throwable> Throwable.findCause(): T? {
     return null
 }
 
-internal fun Throwable.isJwtExpiredError(): Boolean = "jwt expired" in authMessages()
+internal fun Throwable.isJwtExpiredError(): Boolean {
+    val messages = authMessages()
+    return "jwt expired" in messages ||
+        "token is expired" in messages ||
+        "token has expired" in messages
+}
 
 internal fun Throwable.isInvalidSessionError(): Boolean {
     if (findCause<RestException>()?.statusCode == 401) return true

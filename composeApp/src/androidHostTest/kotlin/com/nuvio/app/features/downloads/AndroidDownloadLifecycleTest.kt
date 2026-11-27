@@ -1,6 +1,7 @@
 package com.nuvio.app.features.downloads
 
 import android.app.job.JobInfo
+import android.net.NetworkCapabilities
 import org.robolectric.RuntimeEnvironment
 import java.io.File
 import java.io.IOException
@@ -93,7 +94,10 @@ class AndroidDownloadLifecycleTest {
         val context = RuntimeEnvironment.getApplication()
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setBody("complete video"))
-            val scheduler = AndroidDownloadScheduler(context).apply { preferForegroundService = false }
+            val scheduler = AndroidDownloadScheduler(context).apply {
+                preferForegroundService = false
+                unmeteredNetworkAvailable = { true }
+            }
             val item = downloadItem(server.url("/video").toString(), "background").copy(fileName = "background.mkv")
             val transfer = scheduler.store.begin(item)
 
@@ -123,7 +127,9 @@ class AndroidDownloadLifecycleTest {
 
     @Test
     fun completedRenameIsRecoveredAfterProcessDeathBeforeStateCommit(): Unit = runBlocking {
-        val scheduler = AndroidDownloadScheduler(RuntimeEnvironment.getApplication())
+        val scheduler = AndroidDownloadScheduler(RuntimeEnvironment.getApplication()).apply {
+            unmeteredNetworkAvailable = { true }
+        }
         val transfer = scheduler.store.begin(downloadItem().copy(fileName = "finalized.mkv"))
         scheduler.directory.mkdirs()
         File(scheduler.directory, transfer.item.fileName).writeText("final data")
@@ -178,7 +184,10 @@ class AndroidDownloadLifecycleTest {
                     return MockResponse().setBody("active payload")
                 }
             }
-            val scheduler = AndroidDownloadScheduler(context).apply { preferForegroundService = false }
+            val scheduler = AndroidDownloadScheduler(context).apply {
+                preferForegroundService = false
+                unmeteredNetworkAvailable = { true }
+            }
             val item = downloadItem(server.url("/active").toString(), "active-exec").copy(fileName = "active.mkv")
             val transfer = scheduler.store.begin(item)
             val job = launch(Dispatchers.IO) { scheduler.execute(transfer) { } }
@@ -245,5 +254,51 @@ class AndroidDownloadLifecycleTest {
         assertEquals(DownloadStatus.Paused, pastGrace.status)
         assertEquals("worker_stopped|QUOTA:STOP_REASON_QUOTA", pastGrace.pauseReason)
         assertEquals(null, scheduler.jobScheduler().getPendingJob(transfer.jobId))
+    }
+
+    @Test
+    fun wifiOnlyBlocksMeteredTransferUntilWifiOrCellularEnabled(): Unit = runBlocking {
+        val context = RuntimeEnvironment.getApplication()
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("cellular ok"))
+            var wifiOnly = true
+            var onWifi = false
+            val scheduler = AndroidDownloadScheduler(context).apply {
+                preferForegroundService = false
+                wifiOnlyEnabled = { wifiOnly }
+                unmeteredNetworkAvailable = { onWifi }
+            }
+            val item = downloadItem(server.url("/video").toString(), "wifi-policy").copy(fileName = "wifi-policy.mkv")
+            val transfer = scheduler.enqueue(item)
+
+            val meteredJob = assertNotNull(scheduler.jobScheduler().getPendingJob(transfer.jobId))
+            assertTrue(meteredJob.requiredNetwork?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == true)
+
+            // Attempting to execute on metered network aborts transfer early without failing or pausing user state.
+            assertTrue(scheduler.execute(transfer) { })
+            assertEquals(0, server.requestCount)
+            val afterBlocked = assertNotNull(scheduler.store.get(item.fileName))
+            assertEquals(DownloadStatus.Downloading, afterBlocked.item.status)
+            assertEquals(
+                DownloadPauseReasons.encodeStopDetail(DownloadPauseReasons.STOP_CATEGORY_CONNECTIVITY, "WIFI_ONLY"),
+                afterBlocked.lastStopReason,
+            )
+            // Connectivity stop under wifiOnly is intentionally kept waiting, not paused as stalled.
+            val reconciled = scheduler.reconcileActive(
+                afterBlocked.item,
+                nowMs = System.currentTimeMillis() + AndroidDownloadScheduler.SYSTEM_BACKOFF_STALL_GRACE_MS + 60_000L,
+            )
+            assertEquals(DownloadStatus.Downloading, reconciled.status)
+
+            // Disabling Wi-Fi-only re-schedules any-network job and allows immediate execution over cellular.
+            wifiOnly = false
+            scheduler.applyNetworkPolicy()
+            val cellularJob = assertNotNull(scheduler.jobScheduler().getPendingJob(transfer.jobId))
+            assertFalse(cellularJob.requiredNetwork?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == true)
+
+            assertFalse(scheduler.execute(afterBlocked) { })
+            assertEquals(DownloadStatus.Completed, scheduler.store.get(item.fileName)?.item?.status)
+            assertEquals("cellular ok", File(scheduler.directory, item.fileName).readText())
+        }
     }
 }

@@ -58,7 +58,9 @@ class AndroidTorrentDownloadTest {
                 subtitleBody = validSrt,
             )
             val provider = FakeTorrentSessionProvider(server, filesByIndex = mapOf(2 to episodePayload))
-            val scheduler = AndroidDownloadScheduler(context, provider)
+            val scheduler = AndroidDownloadScheduler(context, provider).apply {
+                unmeteredNetworkAvailable = { true }
+            }
             val item = torrentDownloadItem(
                 fileName = "show-ep2-${UUID.randomUUID()}.mkv",
                 fileIdx = 2,
@@ -104,7 +106,9 @@ class AndroidTorrentDownloadTest {
                 onRequest = { synchronized(recordedRequests) { recordedRequests += it } },
             )
             val provider = FakeTorrentSessionProvider(server, filesByIndex = mapOf(0 to fullPayload))
-            val scheduler = AndroidDownloadScheduler(context, provider)
+            val scheduler = AndroidDownloadScheduler(context, provider).apply {
+                unmeteredNetworkAvailable = { true }
+            }
             val item = torrentDownloadItem(
                 fileName = "pause-resume-${UUID.randomUUID()}.mp4",
                 fileIdx = 0,
@@ -201,7 +205,9 @@ class AndroidTorrentDownloadTest {
             val payload = "loopback-network-bypass-ok".encodeToByteArray()
             server.dispatcher = torrentRangeDispatcher(server, mapOf(0 to payload))
             val provider = FakeTorrentSessionProvider(server, mapOf(0 to payload))
-            val scheduler = AndroidDownloadScheduler(context, provider)
+            val scheduler = AndroidDownloadScheduler(context, provider).apply {
+                unmeteredNetworkAvailable = { true }
+            }
             val item = torrentDownloadItem(fileName = "loopback-${UUID.randomUUID()}.mp4")
             val transfer = scheduler.store.begin(item)
 
@@ -229,7 +235,9 @@ class AndroidTorrentDownloadTest {
                 filesByIndex = mapOf(1 to payload1, 2 to payload2),
                 serializePerHash = true,
             )
-            val scheduler = AndroidDownloadScheduler(context, provider)
+            val scheduler = AndroidDownloadScheduler(context, provider).apply {
+                unmeteredNetworkAvailable = { true }
+            }
             val item1 = torrentDownloadItem(id = "s1", infoHash = sharedHash, fileIdx = 1, fileName = "s1-${UUID.randomUUID()}.mkv")
             val item2 = torrentDownloadItem(id = "s2", infoHash = sharedHash, fileIdx = 2, fileName = "s2-${UUID.randomUUID()}.mkv")
             val t1 = scheduler.store.begin(item1)
@@ -297,7 +305,9 @@ class AndroidTorrentDownloadTest {
                     .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY)
             }
             val provider = FakeTorrentSessionProvider(server, mapOf(0 to fullPayload))
-            val scheduler = AndroidDownloadScheduler(context, provider)
+            val scheduler = AndroidDownloadScheduler(context, provider).apply {
+                unmeteredNetworkAvailable = { true }
+            }
             val item = torrentDownloadItem(fileName = "retry-reset-${UUID.randomUUID()}.mkv")
             val started = scheduler.store.begin(item)
             val atLimitTransfer = scheduler.store.update(item.fileName, started.generation) {
@@ -329,7 +339,9 @@ class AndroidTorrentDownloadTest {
                 server,
                 filesByIndex = mapOf(1 to payload1, 2 to payload2),
             )
-            val scheduler = AndroidDownloadScheduler(context, provider)
+            val scheduler = AndroidDownloadScheduler(context, provider).apply {
+                unmeteredNetworkAvailable = { true }
+            }
             val ep1 = torrentDownloadItem(
                 id = "cleanup-ep1-${UUID.randomUUID()}",
                 infoHash = sharedHash,

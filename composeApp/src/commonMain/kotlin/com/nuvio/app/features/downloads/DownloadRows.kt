@@ -47,6 +47,7 @@ import nuvio.composeapp.generated.resources.downloads_status_downloading
 import nuvio.composeapp.generated.resources.downloads_status_failed
 import nuvio.composeapp.generated.resources.downloads_status_paused
 import nuvio.composeapp.generated.resources.downloads_status_queued
+import nuvio.composeapp.generated.resources.downloads_status_waiting_wifi
 import nuvio.composeapp.generated.resources.episodes_cd_watched
 import nuvio.composeapp.generated.resources.home_continue_watching_watched
 import nuvio.composeapp.generated.resources.media_movie
@@ -59,6 +60,7 @@ internal fun ActiveDownloadRow(
     item: DownloadItem,
     speedBytesPerSecond: Long?,
     inShowPage: Boolean,
+    waitingForWifi: Boolean = false,
     onToggle: () -> Unit,
     onOpenActions: () -> Unit,
 ) {
@@ -90,7 +92,7 @@ internal fun ActiveDownloadRow(
                 DownloadStatus.Queued -> StatusText(
                     text = stringResource(Res.string.downloads_status_queued),
                 )
-                else -> StatusText(text = activeStatusText(item, speedBytesPerSecond))
+                else -> StatusText(text = activeStatusText(item, speedBytesPerSecond, waitingForWifi = waitingForWifi))
             }
         },
         trailing = {
@@ -345,7 +347,11 @@ private fun StatusText(
 }
 
 @Composable
-private fun activeStatusText(item: DownloadItem, speedBytesPerSecond: Long?): String {
+private fun activeStatusText(
+    item: DownloadItem,
+    speedBytesPerSecond: Long?,
+    waitingForWifi: Boolean = false,
+): String {
     val total = item.totalBytes?.takeIf { it > 0L }
     val transferred = if (total != null) {
         "${formatBytes(item.downloadedBytes)} / ${formatBytes(total)}"
@@ -354,6 +360,14 @@ private fun activeStatusText(item: DownloadItem, speedBytesPerSecond: Long?): St
     }
     if (item.status == DownloadStatus.Paused) {
         return stringResource(Res.string.downloads_status_paused, transferred)
+    }
+    if (waitingForWifi && item.status == DownloadStatus.Downloading) {
+        val base = stringResource(Res.string.downloads_status_waiting_wifi)
+        return if (item.downloadedBytes > 0L || total != null) {
+            "$base · $transferred"
+        } else {
+            base
+        }
     }
     val percent = "${(item.progressFraction * 100f).toInt()}%"
     val speed = speedBytesPerSecond?.takeIf { it > 0L }

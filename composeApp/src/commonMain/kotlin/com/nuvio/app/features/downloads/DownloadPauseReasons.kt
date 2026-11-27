@@ -18,6 +18,7 @@ internal object DownloadPauseReasons {
     const val WORKER_STOPPED = "worker_stopped"
     const val FG_SERVICE_BLOCKED = "fg_service_blocked"
     const val TRANSFER_CANCELLED = "transfer_cancelled"
+    const val WIFI_ONLY = "wifi_only"
     const val ACCOUNT_CLEARED = "account_cleared"
     const val IOS_BACKGROUND = "ios_background"
 

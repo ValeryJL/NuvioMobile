@@ -15,6 +15,7 @@ import nuvio.composeapp.generated.resources.downloads_pause_reason_transfer_canc
 import nuvio.composeapp.generated.resources.downloads_pause_reason_unknown
 import nuvio.composeapp.generated.resources.downloads_pause_reason_user_app
 import nuvio.composeapp.generated.resources.downloads_pause_reason_user_notification
+import nuvio.composeapp.generated.resources.downloads_pause_reason_wifi_only
 import nuvio.composeapp.generated.resources.downloads_pause_reason_worker_stopped
 import nuvio.composeapp.generated.resources.downloads_pause_reason_worker_stopped_detail
 import nuvio.composeapp.generated.resources.downloads_stop_detail_app_standby
@@ -65,6 +66,7 @@ private fun diagnosticSpecForCode(code: String, resolvedDetail: String?): Diagno
     }
     DownloadPauseReasons.MISSING_TRANSFER_STATE -> DiagnosticResourceSpec(Res.string.downloads_pause_reason_missing_transfer_state)
     DownloadPauseReasons.TRANSFER_CANCELLED -> DiagnosticResourceSpec(Res.string.downloads_pause_reason_transfer_cancelled)
+    DownloadPauseReasons.WIFI_ONLY -> DiagnosticResourceSpec(Res.string.downloads_pause_reason_wifi_only)
     DownloadPauseReasons.ACCOUNT_CLEARED -> DiagnosticResourceSpec(Res.string.downloads_pause_reason_account_cleared)
     DownloadPauseReasons.IOS_BACKGROUND -> DiagnosticResourceSpec(Res.string.downloads_pause_reason_ios_background)
     else -> DiagnosticResourceSpec(Res.string.downloads_pause_reason_unknown)
