@@ -274,8 +274,8 @@ class AndroidDownloadLifecycleTest {
             val meteredJob = assertNotNull(scheduler.jobScheduler().getPendingJob(transfer.jobId))
             assertTrue(meteredJob.requiredNetwork?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == true)
 
-            // Attempting to execute on metered network aborts transfer early without failing or pausing user state.
-            assertTrue(scheduler.execute(transfer) { })
+            // Attempting to execute on metered network aborts transfer early without retrying or pausing user state.
+            assertFalse(scheduler.execute(transfer) { })
             assertEquals(0, server.requestCount)
             val afterBlocked = assertNotNull(scheduler.store.get(item.fileName))
             assertEquals(DownloadStatus.Downloading, afterBlocked.item.status)
