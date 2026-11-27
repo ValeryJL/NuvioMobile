@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import com.nuvio.app.features.shuffle.ShuffleBadge
@@ -50,6 +52,7 @@ import coil3.compose.AsyncImage
 import com.nuvio.app.core.ui.DisintegratingContainer
 import com.nuvio.app.core.ui.DisintegrationRequest
 import com.nuvio.app.core.ui.NuvioCardDepthSurface
+import com.nuvio.app.core.ui.NuvioHeaderActionPill
 import com.nuvio.app.core.ui.NuvioProgressBar
 import com.nuvio.app.core.ui.NuvioShelfSection
 import com.nuvio.app.core.ui.NuvioTokens
@@ -282,6 +285,7 @@ internal fun HomeContinueWatchingSection(
     onItemClick: ((ContinueWatchingItem) -> Unit)? = null,
     onItemLongPress: ((ContinueWatchingItem) -> Unit)? = null,
     disintegrationRequest: DisintegrationRequest<String>? = null,
+    onHistoryClick: (() -> Unit)? = null,
 ) {
     if (items.isEmpty()) return
 
@@ -300,6 +304,7 @@ internal fun HomeContinueWatchingSection(
             onItemClick = onItemClick,
             onItemLongPress = onItemLongPress,
             disintegrationRequest = disintegrationRequest,
+            onHistoryClick = onHistoryClick,
         )
     } else {
         BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
@@ -317,6 +322,7 @@ internal fun HomeContinueWatchingSection(
                 onItemClick = onItemClick,
                 onItemLongPress = onItemLongPress,
                 disintegrationRequest = disintegrationRequest,
+                onHistoryClick = onHistoryClick,
             )
         }
     }
@@ -337,6 +343,7 @@ private fun HomeContinueWatchingSectionContent(
     onItemClick: ((ContinueWatchingItem) -> Unit)?,
     onItemLongPress: ((ContinueWatchingItem) -> Unit)?,
     disintegrationRequest: DisintegrationRequest<String>?,
+    onHistoryClick: (() -> Unit)?,
 ) {
     key(dataSourceKey) {
         val disintegration = remember {
@@ -353,6 +360,15 @@ private fun HomeContinueWatchingSectionContent(
             headerHorizontalPadding = sectionPadding,
             rowContentPadding = PaddingValues(horizontal = sectionPadding),
             itemSpacing = layout.itemGap,
+            headerAction = onHistoryClick?.let { onClick ->
+                {
+                    NuvioHeaderActionPill(
+                        icon = Icons.Rounded.History,
+                        contentDescription = stringResource(Res.string.watch_history_title),
+                        onClick = onClick,
+                    )
+                }
+            },
             key = { entry -> entry.key },
             animatePlacement = true,
             state = listState,

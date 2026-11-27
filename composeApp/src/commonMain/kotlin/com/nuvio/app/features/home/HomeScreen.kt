@@ -132,6 +132,7 @@ fun HomeScreen(
     onContinueWatchingLongPress: ((ContinueWatchingItem) -> Unit)? = null,
     continueWatchingDisintegrationRequest: DisintegrationRequest<String>? = null,
     onFolderClick: ((collectionId: String, folderId: String) -> Unit)? = null,
+    onHistoryClick: (() -> Unit)? = null,
     onFirstCatalogRendered: (() -> Unit)? = null,
 ) {
     LaunchedEffect(Unit) {
@@ -1050,6 +1051,7 @@ fun HomeScreen(
                         onItemClick = onContinueWatchingClick,
                         onItemLongPress = onContinueWatchingLongPress,
                         disintegrationRequest = continueWatchingDisintegrationRequest,
+                        onHistoryClick = onHistoryClick,
                     )
                     items(
                         count = 3,
@@ -1075,6 +1077,7 @@ fun HomeScreen(
                         onItemClick = onContinueWatchingClick,
                         onItemLongPress = onContinueWatchingLongPress,
                         disintegrationRequest = continueWatchingDisintegrationRequest,
+                        onHistoryClick = onHistoryClick,
                     )
                     item(key = "home_empty", contentType = "empty") {
                         when {
@@ -1166,6 +1169,7 @@ fun HomeScreen(
                         onItemClick = onContinueWatchingClick,
                         onItemLongPress = onContinueWatchingLongPress,
                         disintegrationRequest = continueWatchingDisintegrationRequest,
+                        onHistoryClick = onHistoryClick,
                     )
 
                     keyedEnabledHomeItems.forEach { keyedSettingsItem ->
@@ -1224,6 +1228,7 @@ private fun LazyListScope.homeContinueWatchingSections(
     onItemClick: ((ContinueWatchingItem) -> Unit)?,
     onItemLongPress: ((ContinueWatchingItem) -> Unit)?,
     disintegrationRequest: DisintegrationRequest<String>?,
+    onHistoryClick: (() -> Unit)?,
 ) {
     if (!preferences.isVisible) return
 
@@ -1242,6 +1247,7 @@ private fun LazyListScope.homeContinueWatchingSections(
                 onItemClick = onItemClick,
                 onItemLongPress = onItemLongPress,
                 disintegrationRequest = disintegrationRequest,
+                onHistoryClick = onHistoryClick,
             )
         }
     }

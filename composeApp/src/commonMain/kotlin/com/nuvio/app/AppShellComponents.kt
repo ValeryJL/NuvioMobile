@@ -93,6 +93,7 @@ internal data class AppTabActions(
     val onCloudFilePlay: ((CloudLibraryItem, CloudLibraryFile) -> Unit)? = null,
     val onConnectCloudClick: (() -> Unit)? = null,
     val onDownloadsClick: () -> Unit = {},
+    val onWatchHistoryClick: (() -> Unit)? = null,
     val onContinueWatchingClick: ((ContinueWatchingItem) -> Unit)? = null,
     val onContinueWatchingLongPress: ((ContinueWatchingItem) -> Unit)? = null,
     val onSwitchProfile: (() -> Unit)? = null,
@@ -142,6 +143,7 @@ internal fun AppTabHost(
                         onContinueWatchingLongPress = actions.onContinueWatchingLongPress,
                         continueWatchingDisintegrationRequest = state.continueWatchingDisintegrationRequest,
                         onFolderClick = actions.onFolderClick,
+                        onHistoryClick = actions.onWatchHistoryClick,
                         onFirstCatalogRendered = actions.onInitialHomeContentRendered,
                     )
                 }

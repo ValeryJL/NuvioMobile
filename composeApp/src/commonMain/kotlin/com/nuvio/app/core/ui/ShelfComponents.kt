@@ -34,6 +34,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.Dp
@@ -66,6 +67,7 @@ fun <T> NuvioShelfSection(
     rowContentPadding: PaddingValues = PaddingValues(0.dp),
     rowModifier: Modifier = Modifier,
     itemSpacing: Dp = 10.dp,
+    headerAction: (@Composable () -> Unit)? = null,
     onViewAllClick: (() -> Unit)? = null,
     viewAllPillSize: NuvioViewAllPillSize = NuvioViewAllPillSize.Default,
     key: ((T) -> Any)? = null,
@@ -85,6 +87,7 @@ fun <T> NuvioShelfSection(
             NuvioShelfSectionHeader(
                 title = title,
                 modifier = Modifier.padding(horizontal = headerHorizontalPadding),
+                headerAction = headerAction,
                 onViewAllClick = onViewAllClick,
                 viewAllPillSize = viewAllPillSize,
             )
@@ -274,6 +277,7 @@ fun NuvioPosterCard(
 private fun NuvioShelfSectionHeader(
     title: String,
     modifier: Modifier = Modifier,
+    headerAction: (@Composable () -> Unit)? = null,
     onViewAllClick: (() -> Unit)? = null,
     viewAllPillSize: NuvioViewAllPillSize = NuvioViewAllPillSize.Default,
 ) {
@@ -294,19 +298,56 @@ private fun NuvioShelfSectionHeader(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            val viewAllPlaceholderModifier = if (onViewAllClick == null) {
-                Modifier
-                    .alpha(0f)
-                    .clearAndSetSemantics { }
-            } else {
-                Modifier
+            if (headerAction != null) {
+                headerAction()
             }
-            NuvioViewAllPill(
-                onClick = onViewAllClick,
-                size = viewAllPillSize,
-                modifier = viewAllPlaceholderModifier,
-            )
+            if (onViewAllClick != null || headerAction == null) {
+                val viewAllPlaceholderModifier = if (onViewAllClick == null) {
+                    Modifier
+                        .alpha(0f)
+                        .clearAndSetSemantics { }
+                } else {
+                    Modifier
+                }
+                NuvioViewAllPill(
+                    onClick = onViewAllClick,
+                    size = viewAllPillSize,
+                    modifier = viewAllPlaceholderModifier,
+                )
+            }
         }
+    }
+}
+
+@Composable
+fun NuvioHeaderActionPill(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: NuvioViewAllPillSize = NuvioViewAllPillSize.Default,
+) {
+    val tokens = MaterialTheme.nuvio
+    val actionSize = if (size == NuvioViewAllPillSize.Compact) NuvioTokens.Space.s32 else NuvioTokens.Space.s40
+    val iconSize = if (size == NuvioViewAllPillSize.Compact) NuvioTokens.Icon.sm else tokens.icons.md
+
+    Box(
+        modifier = modifier
+            .size(actionSize)
+            .clip(RoundedCornerShape(NuvioTokens.Radius.xl))
+            .background(
+                color = tokens.colors.surface,
+                shape = RoundedCornerShape(NuvioTokens.Radius.xl),
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = tokens.colors.textMuted,
+            modifier = Modifier.size(iconSize),
+        )
     }
 }
 

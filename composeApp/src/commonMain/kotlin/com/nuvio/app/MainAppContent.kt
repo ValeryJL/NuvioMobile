@@ -181,6 +181,7 @@ import com.nuvio.app.features.trakt.TraktProgressRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingItem
 import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepository
 import com.nuvio.app.features.watchprogress.ResumePromptRepository
+import com.nuvio.app.features.watchprogress.WatchHistoryScreen
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import com.nuvio.app.features.watchprogress.WatchProgressSourceCoordinator
 import com.nuvio.app.features.watchprogress.continueWatchingItemKey
@@ -367,6 +368,7 @@ internal fun MainAppContent(
     val continueWatchingSettingsTitle = stringResource(Res.string.compose_settings_page_continue_watching)
     val debridSettingsTitle = stringResource(Res.string.compose_settings_page_debrid)
     val downloadsTitle = stringResource(Res.string.compose_settings_root_downloads_title)
+    val watchHistoryTitle = stringResource(Res.string.watch_history_title)
     val addonsSettingsTitle = stringResource(Res.string.compose_settings_page_addons)
     val pluginsSettingsTitle = stringResource(Res.string.compose_settings_page_plugins)
     val accountSettingsTitle = stringResource(Res.string.compose_settings_page_account)
@@ -1484,6 +1486,7 @@ internal fun MainAppContent(
                                     }
                                 },
                                 onDownloadsClick = { navController.navigate(DownloadsRoute(downloadsTitle)) },
+                                onWatchHistoryClick = { navController.navigate(WatchHistoryRoute(watchHistoryTitle)) },
                                 onContinueWatchingClick = onContinueWatchingClick,
                                 onContinueWatchingLongPress = onContinueWatchingLongPress,
                                 onSwitchProfile = onSwitchProfile,
@@ -1678,6 +1681,21 @@ internal fun MainAppContent(
                         navController = navController,
                         useNativeNavigation = useNativeNavigation,
                         onOpenDownload = ::openDownloadedItem,
+                    )
+                }
+                entry<WatchHistoryRoute> { route ->
+                    val onBack = rememberGuardedPopBackStack(navController, route)
+                    WatchHistoryScreen(
+                        onBack = onBack,
+                        onOpenDetails = { entry ->
+                            navController.navigate(
+                                DetailRoute(
+                                    type = entry.parentMetaType,
+                                    id = entry.parentMetaId,
+                                    title = entry.title,
+                                ),
+                            )
+                        },
                     )
                 }
                 entry<DownloadShowRoute> { route ->

@@ -2665,4 +2665,19 @@
     <string name="settings_advanced_section_downloads">DOWNLOADS</string>
     <string name="settings_trakt_mirror_nuvio_sync">Mirror Trakt sync to Nuvio Sync</string>
     <string name="settings_trakt_mirror_nuvio_sync_description">Keep a replica of Trakt playback progress, watched history, and completions backed up in Nuvio Sync</string>
+    <string name="watch_history_title">Watch history</string>
+    <string name="watch_history_search_placeholder">Search history</string>
+    <string name="watch_history_filter_all">All</string>
+    <string name="watch_history_filter_completed">Completed</string>
+    <string name="watch_history_filter_in_progress">In progress</string>
+    <string name="watch_history_status_completed">Completed</string>
+    <string name="watch_history_status_watched_until">Watched to %1$s</string>
+    <string name="watch_history_empty_title">No watch history yet</string>
+    <string name="watch_history_empty_message">Movies and episodes you start or finish will appear here ordered from newest to oldest.</string>
+    <string name="watch_history_filtered_empty_title">No matching results</string>
+    <string name="watch_history_filtered_empty_message">Try another filter or search term.</string>
+    <plurals name="watch_history_count">
+        <item quantity="one">%1$d entry</item>
+        <item quantity="other">%1$d entries</item>
+    </plurals>
 </resources>

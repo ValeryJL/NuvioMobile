@@ -2618,4 +2618,19 @@
     <string name="settings_advanced_section_downloads">DESCARGAS</string>
     <string name="settings_trakt_mirror_nuvio_sync">Replicar Trakt en Nuvio Sync</string>
     <string name="settings_trakt_mirror_nuvio_sync_description">Guarda en Nuvio Sync una copia de tu progreso, historial visto y completados de Trakt como respaldo</string>
+    <string name="watch_history_title">Historial</string>
+    <string name="watch_history_search_placeholder">Buscar en el historial</string>
+    <string name="watch_history_filter_all">Todos</string>
+    <string name="watch_history_filter_completed">Completados</string>
+    <string name="watch_history_filter_in_progress">A medias</string>
+    <string name="watch_history_status_completed">Completado</string>
+    <string name="watch_history_status_watched_until">Visto hasta %1$s</string>
+    <string name="watch_history_empty_title">Todavía no hay historial</string>
+    <string name="watch_history_empty_message">Acá van a aparecer las películas y episodios que empieces o termines de ver, del más reciente al más antiguo.</string>
+    <string name="watch_history_filtered_empty_title">Sin resultados</string>
+    <string name="watch_history_filtered_empty_message">Probá cambiar el filtro o el término de búsqueda.</string>
+    <plurals name="watch_history_count">
+        <item quantity="one">%1$d registro</item>
+        <item quantity="other">%1$d registros</item>
+    </plurals>
 </resources>
