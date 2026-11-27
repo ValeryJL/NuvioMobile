@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
+import com.nuvio.app.features.audiosync.AudioSyncFallback
 import com.nuvio.app.features.autosync.AutoSyncPreferencesAndroid
 import android.os.Bundle
 import androidx.activity.compose.setContent
@@ -99,6 +100,7 @@ open class MainActivity : AppCompatActivity() {
         SentryInitializer.start(application)
         super.onCreate(savedInstanceState)
         AutoSyncPreferencesAndroid.initialize(applicationContext) // AutoSync hook
+        AudioSyncFallback.initialize(applicationContext)
         window.setBackgroundDrawableResource(R.color.nuvio_background)
         pipRemoteActionReceiver = PipRemoteActionReceiver.register(this)
         SyncClientIdentityStorage.initialize(applicationContext)
