@@ -34,9 +34,10 @@ import okhttp3.OkHttpClient
 
 private const val TAG = "AndroidTorrentDownload"
 private const val DOWNLOAD_ENGINE_DIR = "nuvio-downloads-engine"
+private const val TORRENT_LOOPBACK_STALL_TIMEOUT_MS = 75_000L
 
 internal val torrentLoopbackHttpClient: OkHttpClient = downloadHttpClient.newBuilder()
-    .readTimeout(180, TimeUnit.SECONDS)
+    .readTimeout(120, TimeUnit.SECONDS)
     .build()
 
 internal interface TorrentStreamSession {
@@ -320,6 +321,7 @@ internal suspend fun transferTorrentDownload(
             directory = directory,
             validator = null,
             client = client,
+            stallTimeoutMs = TORRENT_LOOPBACK_STALL_TIMEOUT_MS,
             onHeaders = { totalBytes, _ ->
                 onHeaders(totalBytes ?: knownSize, null)
             },

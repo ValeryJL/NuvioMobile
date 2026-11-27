@@ -18,7 +18,7 @@ class DownloadsNotificationActionReceiver : BroadcastReceiver() {
             when (action) {
                 actionPause -> scheduler.pause(transfer.item.fileName, DownloadPauseReasons.USER_NOTIFICATION)
                 actionResume -> if (transfer.item.status == DownloadStatus.Paused || transfer.item.status == DownloadStatus.Failed) {
-                    scheduler.enqueue(transfer.item)
+                    scheduler.enqueue(transfer.item, forceRecreate = true)
                     DownloadsRepository.reattachBackgroundDownload(downloadId)
                 }
             }

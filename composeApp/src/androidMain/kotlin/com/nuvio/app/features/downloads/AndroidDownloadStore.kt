@@ -18,6 +18,7 @@ internal data class AndroidDownloadTransfer(
     val validator: String? = null,
     val retryCount: Int = 0,
     val lastStopReason: String? = null,
+    val lastStoppedAtEpochMs: Long? = null,
 )
 
 internal class AndroidDownloadStore(private val directory: File) {
@@ -28,9 +29,14 @@ internal class AndroidDownloadStore(private val directory: File) {
 
     fun get(fileName: String): AndroidDownloadTransfer? = state.value[fileName]
 
-    fun begin(item: DownloadItem): AndroidDownloadTransfer = synchronized(lock) {
+    fun begin(item: DownloadItem, forceNewJob: Boolean = false): AndroidDownloadTransfer = synchronized(lock) {
         val previous = get(item.fileName)?.takeIf { it.item.id == item.id }
-        if (previous?.item?.status == DownloadStatus.Downloading) return@synchronized previous
+        if (!forceNewJob && previous?.item?.status == DownloadStatus.Downloading) return@synchronized previous
+        val nextJobId = if (forceNewJob || previous == null) {
+            (state.value.values.maxOfOrNull { it.jobId } ?: 0) + 1
+        } else {
+            previous.jobId
+        }
         val transfer = AndroidDownloadTransfer(
             item = item.copy(
                 status = DownloadStatus.Downloading,
@@ -38,10 +44,11 @@ internal class AndroidDownloadStore(private val directory: File) {
                 pauseReason = null,
                 localFileUri = null,
             ),
-            jobId = previous?.jobId ?: ((state.value.values.maxOfOrNull { it.jobId } ?: 0) + 1),
+            jobId = nextJobId,
             generation = UUID.randomUUID().toString(),
             validator = previous?.validator,
             lastStopReason = null,
+            lastStoppedAtEpochMs = null,
         )
         save(transfer)
         transfer

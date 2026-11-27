@@ -2641,4 +2641,6 @@
     <string name="downloads_season_pack_batch_all_queued">%1$d episode(s) queued</string>
     <string name="downloads_season_pack_batch_partial">Queued %1$d of %2$d (%3$d failed to resolve)</string>
     <string name="downloads_season_pack_batch_failed">Could not prepare selected episodes</string>
+    <string name="downloads_restart_background">Restart in background</string>
+    <string name="downloads_error_stalled">Download stalled without receiving data</string>
 </resources>

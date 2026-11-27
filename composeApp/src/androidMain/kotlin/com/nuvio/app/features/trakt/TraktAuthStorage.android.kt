@@ -21,13 +21,13 @@ internal actual object TraktAuthStorage {
         preferences
             ?.edit()
             ?.putString(ProfileScopedKey.of(payloadKey, profileId), payload)
-            ?.apply()
+            ?.commit()
     }
 
     actual fun removeProfile(profileId: Int) {
         preferences
             ?.edit()
             ?.remove(ProfileScopedKey.of(payloadKey, profileId))
-            ?.apply()
+            ?.commit()
     }
 }

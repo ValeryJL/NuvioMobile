@@ -4,14 +4,21 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
+
+private const val DEFAULT_HTTP_STALL_TIMEOUT_MS = 45_000L
 
 internal val downloadHttpClient = OkHttpClient.Builder()
     .connectTimeout(60, TimeUnit.SECONDS)
@@ -23,15 +30,22 @@ internal val downloadHttpClient = OkHttpClient.Builder()
 
 internal class DownloadHttpException(val statusCode: Int) : IOException("Download failed: HTTP $statusCode")
 
+internal class DownloadStallException(message: String, cause: Throwable? = null) : IOException(message, cause)
+
 internal suspend fun transferAndroidDownload(
     item: DownloadItem,
     directory: File,
     validator: String?,
     client: OkHttpClient = downloadHttpClient,
+    stallTimeoutMs: Long = DEFAULT_HTTP_STALL_TIMEOUT_MS,
+    nowMs: () -> Long = System::currentTimeMillis,
     onHeaders: (totalBytes: Long?, validator: String?) -> Unit,
     onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
 ): File = coroutineScope {
     val activeCall = AtomicReference<Call?>()
+    val readingStarted = AtomicBoolean(false)
+    val lastByteEpochMs = AtomicLong(nowMs())
+    val stalled = AtomicBoolean(false)
     val transfer = async(Dispatchers.IO) {
         try {
             require(File(item.fileName).name == item.fileName && item.fileName.isNotBlank())
@@ -80,17 +94,24 @@ internal suspend fun transferAndroidDownload(
                     body.byteStream().use { input ->
                         FileOutputStream(partial, resumed && offset > 0L).use { output ->
                             val buffer = ByteArray(64 * 1024)
+                            lastByteEpochMs.set(nowMs())
+                            readingStarted.set(true)
                             while (true) {
                                 ensureActive()
                                 val size = input.read(buffer)
                                 if (size == -1) break
+                                if (size > 0) {
+                                    lastByteEpochMs.set(nowMs())
+                                }
                                 output.write(buffer, 0, size)
                                 downloaded += size
                                 onProgress(downloaded, totalBytes)
                             }
+                            readingStarted.set(false)
                             output.fd.sync()
                         }
                     }
+                    readingStarted.set(false)
                     ensureActive()
                     if (totalBytes != null && downloaded != totalBytes) {
                         throw IOException("Download ended before all bytes were received")
@@ -102,13 +123,35 @@ internal suspend fun transferAndroidDownload(
             partial
         } catch (error: Exception) {
             // Closing a cancelled HTTP call throws IOException from its blocking read.
+            if (stalled.get()) {
+                throw DownloadStallException(
+                    "Download stalled without receiving data for ${(stallTimeoutMs / 1000L).coerceAtLeast(1L)}s",
+                    error,
+                )
+            }
             ensureActive()
             throw error
         }
     }
+    val watchdog = if (stallTimeoutMs > 0L) {
+        launch(Dispatchers.Default) {
+            val pollMs = (stallTimeoutMs / 3L).coerceIn(25L, 5_000L)
+            while (isActive && transfer.isActive) {
+                delay(pollMs)
+                if (readingStarted.get() && nowMs() - lastByteEpochMs.get() >= stallTimeoutMs) {
+                    stalled.set(true)
+                    activeCall.get()?.cancel()
+                    break
+                }
+            }
+        }
+    } else {
+        null
+    }
     try {
         transfer.await()
     } finally {
+        watchdog?.cancel()
         activeCall.get()?.cancel()
     }
 }

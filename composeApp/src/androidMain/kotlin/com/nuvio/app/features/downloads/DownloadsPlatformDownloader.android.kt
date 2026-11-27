@@ -45,15 +45,19 @@ internal actual object DownloadsPlatformDownloader {
             item
         }
 
+    actual fun reconcileActiveItem(item: DownloadItem): DownloadItem = downloadScheduler?.reconcileActive(item)
+        ?: restoreItem(item)
+
     actual fun start(
         request: DownloadPlatformRequest,
         onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
         onSuccess: (localFileUri: String, totalBytes: Long?) -> Unit,
         onFailure: (message: String) -> Unit,
         onPaused: (reason: String?) -> Unit,
+        forceRecreate: Boolean,
     ): DownloadsTaskHandle {
         val scheduler = checkNotNull(downloadScheduler) { "Downloads are not initialized" }
-        val transfer = scheduler.enqueue(request.item)
+        val transfer = scheduler.enqueue(request.item, forceRecreate = forceRecreate)
         val observer = observerScope.launch {
             scheduler.store.transfers.map { it[request.destinationFileName] }
                 .distinctUntilChanged()

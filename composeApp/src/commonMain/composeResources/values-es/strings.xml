@@ -2594,4 +2594,6 @@
     <string name="downloads_season_pack_batch_all_queued">%1$d capítulo(s) en cola</string>
     <string name="downloads_season_pack_batch_partial">Encolados %1$d de %2$d (%3$d fallaron al resolver)</string>
     <string name="downloads_season_pack_batch_failed">No se pudieron preparar los capítulos elegidos</string>
+    <string name="downloads_restart_background">Reiniciar en segundo plano</string>
+    <string name="downloads_error_stalled">La descarga se detuvo sin recibir datos</string>
 </resources>

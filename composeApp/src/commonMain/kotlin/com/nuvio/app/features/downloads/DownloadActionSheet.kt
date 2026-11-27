@@ -37,6 +37,7 @@ import nuvio.composeapp.generated.resources.action_resume
 import nuvio.composeapp.generated.resources.action_retry
 import nuvio.composeapp.generated.resources.compose_action_pause
 import nuvio.composeapp.generated.resources.cw_action_go_to_details
+import nuvio.composeapp.generated.resources.downloads_restart_background
 import nuvio.composeapp.generated.resources.downloads_start_now
 import org.jetbrains.compose.resources.stringResource
 
@@ -48,6 +49,7 @@ internal fun DownloadActionSheet(
     onDismiss: () -> Unit,
     onPlay: () -> Unit,
     onToggleTransfer: () -> Unit,
+    onRestartBackground: (() -> Unit)? = null,
     onStartNow: (() -> Unit)? = null,
     onOpenDetails: () -> Unit,
     onDelete: () -> Unit,
@@ -87,11 +89,20 @@ internal fun DownloadActionSheet(
                     ),
                     onClick = { dismissAfter(onPlay) },
                 )
-                DownloadStatus.Downloading -> NuvioBottomSheetActionRow(
-                    icon = Icons.Rounded.Pause,
-                    title = stringResource(Res.string.compose_action_pause),
-                    onClick = { dismissAfter(onToggleTransfer) },
-                )
+                DownloadStatus.Downloading -> {
+                    if (onRestartBackground != null) {
+                        NuvioBottomSheetActionRow(
+                            icon = Icons.Rounded.Refresh,
+                            title = stringResource(Res.string.downloads_restart_background),
+                            onClick = { dismissAfter(onRestartBackground) },
+                        )
+                    }
+                    NuvioBottomSheetActionRow(
+                        icon = Icons.Rounded.Pause,
+                        title = stringResource(Res.string.compose_action_pause),
+                        onClick = { dismissAfter(onToggleTransfer) },
+                    )
+                }
                 DownloadStatus.Queued -> {
                     if (onStartNow != null) {
                         NuvioBottomSheetActionRow(

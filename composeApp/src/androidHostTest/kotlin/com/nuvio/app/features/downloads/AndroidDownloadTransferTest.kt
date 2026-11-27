@@ -122,10 +122,30 @@ class AndroidDownloadTransferTest {
     @Test
     fun retryPolicyDistinguishesTransientAndPermanentFailures() {
         assertTrue(shouldRetryAndroidDownload(IOException("connection lost"), 0))
+        assertTrue(shouldRetryAndroidDownload(DownloadStallException("stalled"), 0))
         assertTrue(shouldRetryAndroidDownload(DownloadHttpException(503), 0))
         assertTrue(shouldRetryAndroidDownload(DownloadHttpException(429), 0))
         assertFalse(shouldRetryAndroidDownload(DownloadHttpException(403), 0))
         assertFalse(shouldRetryAndroidDownload(IOException("connection lost"), 4))
+    }
+
+    @Test
+    fun stalledTransferThrowsDownloadStallExceptionInsteadOfHanging(): Unit = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("abcdefghij").throttleBody(1, 5, TimeUnit.SECONDS))
+            val directory = temporary.newFolder()
+            val error = assertFailsWith<DownloadStallException> {
+                transferAndroidDownload(
+                    item = downloadItem(server.url("/stalled").toString()),
+                    directory = directory,
+                    validator = null,
+                    stallTimeoutMs = 150L,
+                    onHeaders = { _, _ -> },
+                    onProgress = { _, _ -> },
+                )
+            }
+            assertTrue(shouldRetryAndroidDownload(error, 0))
+        }
     }
 }
 

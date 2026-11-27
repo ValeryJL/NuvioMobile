@@ -669,6 +669,7 @@ internal fun MainAppContent(
                         NetworkStatusRepository.requestForegroundRefresh()
                         DeviceSessionRegistration.registerIfAuthenticated()
                         MemberAccessRepository.refreshIfStale()
+                        DownloadsRepository.requestActiveReconciliation()
                         if (syncProfileId != null) {
                             SyncManager.startPeriodicNuvioSyncPull(syncProfileId)
                             SyncManager.requestForegroundPull(syncProfileId)

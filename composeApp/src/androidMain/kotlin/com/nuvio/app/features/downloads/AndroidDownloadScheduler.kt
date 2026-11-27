@@ -15,6 +15,7 @@ import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.nuvio.app.core.build.AppFeaturePolicy
@@ -25,15 +26,20 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.downloads_error_stalled
 import okhttp3.ConnectionPool
+import org.jetbrains.compose.resources.getString
 
 internal class AndroidDownloadScheduler(
     val context: Context,
@@ -43,12 +49,17 @@ internal class AndroidDownloadScheduler(
     val directory = File(context.filesDir, "downloads")
     private val locks = ConcurrentHashMap<String, Mutex>()
     private val activeExecutions = ConcurrentHashMap.newKeySet<String>()
+    private val activeJobs = ConcurrentHashMap<String, Job>()
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    fun enqueue(item: DownloadItem): AndroidDownloadTransfer {
+    fun enqueue(item: DownloadItem, forceRecreate: Boolean = false): AndroidDownloadTransfer {
         val previous = store.get(item.fileName)
-        val transfer = store.begin(item)
-        val existing = previous?.generation == transfer.generation
+        if (forceRecreate && previous != null && previous.item.id == item.id) {
+            activeJobs.remove(previous.generation)?.cancel()
+            cancelScheduled(previous)
+        }
+        val transfer = store.begin(item, forceNewJob = forceRecreate)
+        val existing = !forceRecreate && previous?.generation == transfer.generation
         val alreadyScheduledOrRunning = existing && Build.VERSION.SDK_INT >= 34 &&
             (activeExecutions.contains(transfer.generation) || jobScheduler().getPendingJob(transfer.jobId) != null)
         if (alreadyScheduledOrRunning) return transfer
@@ -130,6 +141,61 @@ internal class AndroidDownloadScheduler(
         return transfer.item
     }
 
+    fun reconcileActive(item: DownloadItem, nowMs: Long = System.currentTimeMillis()): DownloadItem {
+        if (item.status != DownloadStatus.Downloading) return item
+        val transfer = store.get(item.fileName)?.takeIf { it.item.id == item.id }
+            ?: return item.copy(
+                status = DownloadStatus.Paused,
+                errorMessage = null,
+                pauseReason = item.pauseReason ?: DownloadPauseReasons.MISSING_TRANSFER_STATE,
+            )
+        if (transfer.item.status != DownloadStatus.Downloading) return transfer.item
+        if (activeExecutions.contains(transfer.generation)) return transfer.item
+
+        if (!hasBackgroundJob(transfer)) {
+            pause(
+                fileName = item.fileName,
+                reason = DownloadPauseReasons.withDetail(
+                    DownloadPauseReasons.MISSING_JOB,
+                    transfer.lastStopReason,
+                ),
+            )
+            return store.get(item.fileName)?.item ?: transfer.item
+        }
+
+        val stopDetail = transfer.lastStopReason
+        if (stopDetail != null) {
+            val (category, _) = DownloadPauseReasons.parseStopDetail(stopDetail)
+            val stoppedAt = transfer.lastStoppedAtEpochMs ?: transfer.item.updatedAtEpochMs
+            val isSystemBlocked = category == DownloadPauseReasons.STOP_CATEGORY_BACKGROUND_RESTRICTION ||
+                category == DownloadPauseReasons.STOP_CATEGORY_APP_STANDBY
+            val stalledInBackoff = stoppedAt > 0L && nowMs - stoppedAt >= SYSTEM_BACKOFF_STALL_GRACE_MS
+            if (isSystemBlocked || stalledInBackoff) {
+                pause(
+                    fileName = item.fileName,
+                    reason = DownloadPauseReasons.withDetail(
+                        DownloadPauseReasons.WORKER_STOPPED,
+                        stopDetail,
+                    ),
+                )
+                return store.get(item.fileName)?.item ?: transfer.item
+            }
+        }
+        return transfer.item
+    }
+
+    private fun hasBackgroundJob(transfer: AndroidDownloadTransfer): Boolean =
+        if (Build.VERSION.SDK_INT >= 34) {
+            jobScheduler().getPendingJob(transfer.jobId) != null
+        } else {
+            runCatching {
+                WorkManager.getInstance(context)
+                    .getWorkInfosForUniqueWork(workName(transfer))
+                    .get()
+                    .any { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.RUNNING }
+            }.getOrDefault(true)
+        }
+
     fun pause(fileName: String, reason: String? = null) {
         val transfer = store.get(fileName) ?: return
         if (transfer.item.status != DownloadStatus.Downloading) return
@@ -143,13 +209,18 @@ internal class AndroidDownloadScheduler(
                 ),
             )
         }
+        activeJobs.remove(transfer.generation)?.cancel()
         cancelScheduled(transfer)
         paused?.let { DownloadsLiveStatusPlatform.notifyTransfer(it.item) }
     }
 
-    internal fun recordSystemStop(transfer: AndroidDownloadTransfer, stopDetail: String) {
+    internal fun recordSystemStop(
+        transfer: AndroidDownloadTransfer,
+        stopDetail: String,
+        stoppedAtEpochMs: Long = System.currentTimeMillis(),
+    ) {
         updateActive(transfer) {
-            it.copy(lastStopReason = stopDetail)
+            it.copy(lastStopReason = stopDetail, lastStoppedAtEpochMs = stoppedAtEpochMs)
         }
     }
 
@@ -157,6 +228,7 @@ internal class AndroidDownloadScheduler(
         val transfer = store.get(fileName)
         val torrentInfoHash = transfer?.item?.torrentInfoHash
         store.remove(fileName)
+        transfer?.let { activeJobs.remove(it.generation)?.cancel() }
         transfer?.let(::cancelScheduled)
         transfer?.let { DownloadsLiveStatusPlatform.removeNotification(it.item.id) }
         cleanupScope.launch {
@@ -199,7 +271,13 @@ internal class AndroidDownloadScheduler(
         } else {
             downloadHttpClient
         }
+        currentCoroutineContext()[Job]?.let { job -> activeJobs[transfer.generation] = job }
         activeExecutions.add(transfer.generation)
+        updateActive(transfer) {
+            if (it.lastStopReason != null || it.lastStoppedAtEpochMs != null) {
+                it.copy(lastStopReason = null, lastStoppedAtEpochMs = null)
+            } else it
+        }
         val lockGuard = acquireTransferWakeLocks(context, "nuvio:download:${transfer.jobId}")
         try {
             if (isTorrent && (!AppFeaturePolicy.p2pEnabled || !DownloadsPlatformDownloader.supportsTorrentDownloads)) {
@@ -220,6 +298,8 @@ internal class AndroidDownloadScheduler(
                         val updatedRetryCount = if (bytes > initialPartialBytes) 0 else it.retryCount
                         it.copy(
                             retryCount = updatedRetryCount,
+                            lastStopReason = null,
+                            lastStoppedAtEpochMs = null,
                             item = it.item.copy(downloadedBytes = bytes, totalBytes = total),
                         )
                     }?.let(onProgress)
@@ -282,6 +362,7 @@ internal class AndroidDownloadScheduler(
             } else fail(transfer, error)
             retry
         } finally {
+            activeJobs.remove(transfer.generation)
             activeExecutions.remove(transfer.generation)
             lockGuard.close()
             if (network != null && !isTorrent) withContext(NonCancellable + Dispatchers.IO) { client.connectionPool.evictAll() }
@@ -293,8 +374,14 @@ internal class AndroidDownloadScheduler(
     } == true
 
     fun fail(transfer: AndroidDownloadTransfer, error: Exception) {
+        val message = when (error) {
+            is DownloadStallException -> runCatching {
+                runBlocking { getString(Res.string.downloads_error_stalled) }
+            }.getOrElse { error.message ?: "Download failed" }
+            else -> error.message ?: "Download failed"
+        }
         updateActive(transfer) {
-            it.copy(item = it.item.copy(status = DownloadStatus.Failed, errorMessage = error.message ?: "Download failed"))
+            it.copy(item = it.item.copy(status = DownloadStatus.Failed, errorMessage = message))
         }
     }
 
@@ -330,6 +417,7 @@ internal class AndroidDownloadScheduler(
         const val FILE_NAME = "download_file_name"
         const val GENERATION = "download_generation"
         const val JOB_NAMESPACE = "nuvio-downloads"
+        const val SYSTEM_BACKOFF_STALL_GRACE_MS = 25_000L
     }
 }
 

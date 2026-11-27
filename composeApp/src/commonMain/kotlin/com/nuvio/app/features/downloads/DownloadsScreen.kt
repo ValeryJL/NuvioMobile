@@ -89,6 +89,9 @@ fun DownloadsScreen(
     LaunchedEffect(uiState.completedItems.size) {
         DownloadsRepository.markCompletedSeen()
     }
+    LaunchedEffect(Unit) {
+        DownloadsRepository.requestActiveReconciliation()
+    }
 
     var selectedShowId by rememberSaveable(initialShowId) { mutableStateOf(initialShowId) }
     var actionsItemId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -173,6 +176,9 @@ fun DownloadsScreen(
         onDismiss = { actionsItemId = null },
         onPlay = { actionsItem?.let(onOpenDownload) },
         onToggleTransfer = { actionsItem?.toggleTransfer() },
+        onRestartBackground = actionsItem?.takeIf { it.status == DownloadStatus.Downloading }?.let { activeItem ->
+            { DownloadsRepository.restartDownload(activeItem.id) }
+        },
         onStartNow = actionsItem?.takeIf { it.status == DownloadStatus.Queued }?.let { queuedItem ->
             { DownloadsRepository.startQueuedDownloadNow(queuedItem.id) }
         },

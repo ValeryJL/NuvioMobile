@@ -75,6 +75,7 @@ internal actual object DownloadsPlatformDownloader {
         onSuccess: (localFileUri: String, totalBytes: Long?) -> Unit,
         onFailure: (message: String) -> Unit,
         onPaused: (reason: String?) -> Unit,
+        forceRecreate: Boolean,
     ): DownloadsTaskHandle {
         val job = SupervisorJob()
         val scope = CoroutineScope(job + Dispatchers.Default)
@@ -159,6 +160,8 @@ internal actual object DownloadsPlatformDownloader {
         } else {
             item
         }
+
+    actual fun reconcileActiveItem(item: DownloadItem): DownloadItem = item
 
     actual fun removeFile(localFileUri: String?): Boolean {
         if (localFileUri.isNullOrBlank()) return false

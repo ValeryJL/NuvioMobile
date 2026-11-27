@@ -10,6 +10,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
@@ -120,6 +123,47 @@ class AndroidDownloadQueueTest {
         val afterPromotion = DownloadsRepository.uiState.value.items.associateBy { it.episodeNumber }
         assertEquals(DownloadStatus.Downloading, afterPromotion[3]?.status)
         assertEquals(DownloadStatus.Queued, afterPromotion[2]?.status)
+    }
+
+    @Test
+    fun reconcileActiveDownloadsDetectsDroppedJobPromotesQueueAndPlayCreatesNewBackgroundJob() {
+        val context = RuntimeEnvironment.getApplication()
+        val scheduler = DownloadsPlatformDownloader.scheduler(context)
+        val summary = DownloadsRepository.enqueueBatchFromStreams((1..3).map(::httpBatchRequest))
+        assertEquals(2, summary.startedCount)
+        assertEquals(1, summary.queuedCount)
+
+        val byEpisode = DownloadsRepository.uiState.value.items.associateBy { it.episodeNumber }
+        val ep1 = byEpisode.getValue(1)
+        val ep2 = byEpisode.getValue(2)
+        val initialEp1Transfer = assertNotNull(scheduler.store.get(ep1.fileName))
+        val initialEp2Transfer = assertNotNull(scheduler.store.get(ep2.fileName))
+
+        // Simulate Android killing ep1's JobScheduler task while the app stays open.
+        scheduler.jobScheduler().cancel(initialEp1Transfer.jobId)
+        DownloadsRepository.reconcileActiveDownloads()
+
+        val afterReconcile = DownloadsRepository.uiState.value.items.associateBy { it.episodeNumber }
+        assertEquals(DownloadStatus.Paused, afterReconcile[1]?.status)
+        assertEquals(DownloadPauseReasons.MISSING_JOB, afterReconcile[1]?.pauseReason)
+        assertEquals(DownloadStatus.Downloading, afterReconcile[3]?.status)
+
+        // Restarting an active download creates a fresh JobScheduler job & generation cleanly.
+        DownloadsRepository.restartDownload(ep2.id)
+        val restartedEp2Transfer = assertNotNull(scheduler.store.get(ep2.fileName))
+        assertNotEquals(initialEp2Transfer.jobId, restartedEp2Transfer.jobId)
+        assertNotEquals(initialEp2Transfer.generation, restartedEp2Transfer.generation)
+        assertNull(scheduler.jobScheduler().getPendingJob(initialEp2Transfer.jobId))
+        assertNotNull(scheduler.jobScheduler().getPendingJob(restartedEp2Transfer.jobId))
+
+        // Pressing Play on paused ep1 creates a brand-new background job (or queues cleanly if at cap).
+        DownloadsRepository.pauseDownload(afterReconcile.getValue(3).id)
+        DownloadsRepository.resumeDownload(ep1.id)
+        val resumedEp1Transfer = assertNotNull(scheduler.store.get(ep1.fileName))
+        assertEquals(DownloadStatus.Downloading, DownloadsRepository.uiState.value.items.first { it.id == ep1.id }.status)
+        assertNotEquals(initialEp1Transfer.jobId, resumedEp1Transfer.jobId)
+        assertNotEquals(initialEp1Transfer.generation, resumedEp1Transfer.generation)
+        assertNotNull(scheduler.jobScheduler().getPendingJob(resumedEp1Transfer.jobId))
     }
 
     private fun httpBatchRequest(episodeNumber: Int): StreamBatchDownloadRequest =

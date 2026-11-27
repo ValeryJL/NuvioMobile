@@ -5,6 +5,15 @@ import com.nuvio.app.features.p2p.normalizeP2pInfoHashOrNull
 import com.nuvio.app.features.player.SubtitleRequestExtras
 import com.nuvio.app.features.player.addonSubtitleRequests
 import com.nuvio.app.features.streams.StreamItem
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,6 +26,8 @@ import kotlinx.serialization.json.Json
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.getString
 
+private const val ACTIVE_HEALTH_CHECK_INTERVAL_MS = 15_000L
+
 object DownloadsRepository {
     private val _uiState = MutableStateFlow(DownloadsUiState())
     val uiState: StateFlow<DownloadsUiState> = _uiState.asStateFlow()
@@ -25,6 +36,10 @@ object DownloadsRepository {
     val hasUnseenCompleted: StateFlow<Boolean> = _hasUnseenCompleted.asStateFlow()
 
     private val activeHandles = mutableMapOf<String, DownloadsTaskHandle>()
+    private val watchdogLock = SynchronizedObject()
+    private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var watchdogJob: Job? = null
+    private var reconcileJob: Job? = null
     private var hasLoaded = false
     private var nextDownloadOrdinal = 0L
 
@@ -42,6 +57,7 @@ object DownloadsRepository {
     }
 
     fun clearLocalState() {
+        cancelWatchdog()
         activeHandles.values.forEach { it.cancel(DownloadPauseReasons.ACCOUNT_CLEARED) }
         activeHandles.clear()
         hasLoaded = false
@@ -252,7 +268,7 @@ object DownloadsRepository {
 
         publish(working)
         persist()
-        toStart.forEach(::startDownload)
+        toStart.forEach { startDownload(it, forceRecreate = true) }
     }
 
     fun resumeDownload(downloadId: String) {
@@ -276,8 +292,31 @@ object DownloadsRepository {
         replaceItem(reset)
         persist()
         if (nextStatus == DownloadStatus.Downloading) {
-            startDownload(reset)
+            startDownload(reset, forceRecreate = true)
         }
+    }
+
+    fun restartDownload(downloadId: String) {
+        ensureLoaded()
+        val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
+        if (item.status == DownloadStatus.Completed) return
+
+        if (item.status == DownloadStatus.Downloading) {
+            activeHandles.remove(item.id)?.cancel(DownloadPauseReasons.TRANSFER_CANCELLED)
+            val restarted = item.copy(
+                status = DownloadStatus.Downloading,
+                errorMessage = null,
+                pauseReason = null,
+                localFileUri = null,
+                updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+            )
+            replaceItem(restarted)
+            persist()
+            startDownload(restarted, forceRecreate = true)
+            return
+        }
+
+        resumeDownload(downloadId)
     }
 
     fun startQueuedDownloadNow(downloadId: String) {
@@ -314,11 +353,58 @@ object DownloadsRepository {
         )
         replaceItem(started)
         persist()
-        startDownload(started)
+        startDownload(started, forceRecreate = true)
     }
 
     fun retryDownload(downloadId: String) {
         resumeDownload(downloadId)
+    }
+
+    fun requestActiveReconciliation() {
+        if (!hasLoaded) return
+        if (_uiState.value.items.none { it.status == DownloadStatus.Downloading }) return
+        synchronized(watchdogLock) {
+            if (reconcileJob?.isActive == true) return
+            reconcileJob = watchdogScope.launch {
+                reconcileActiveDownloads()
+            }
+        }
+    }
+
+    internal fun reconcileActiveDownloads() {
+        if (!hasLoaded) return
+        val currentItems = _uiState.value.items
+        if (currentItems.none { it.status == DownloadStatus.Downloading }) return
+
+        val reconciledUpdates = linkedMapOf<String, DownloadItem>()
+        currentItems.forEach { item ->
+            if (item.status == DownloadStatus.Downloading) {
+                val reconciled = DownloadsPlatformDownloader.reconcileActiveItem(item)
+                if (reconciled != item) {
+                    reconciledUpdates[item.id] = reconciled
+                    if (reconciled.status != DownloadStatus.Downloading) {
+                        activeHandles.remove(item.id)?.detachObserver()
+                    }
+                }
+            }
+        }
+        if (reconciledUpdates.isEmpty()) return
+
+        var anyApplied = false
+        val mergedItems = _uiState.value.items.map { latest ->
+            val reconciled = reconciledUpdates[latest.id]
+            if (reconciled != null && latest.status == DownloadStatus.Downloading) {
+                anyApplied = true
+                reconciled
+            } else {
+                latest
+            }
+        }
+        if (anyApplied) {
+            publish(mergedItems)
+            persist()
+            promoteQueuedDownloads()
+        }
     }
 
     internal fun reattachBackgroundDownload(downloadId: String) {
@@ -474,15 +560,17 @@ object DownloadsRepository {
             persist()
         }
         normalized.filter { it.status == DownloadStatus.Downloading && it.id !in activeHandles }
-            .forEach(::startDownload)
+            .forEach { startDownload(it) }
         promoteQueuedDownloads()
+        syncWatchdogState(_uiState.value.items)
     }
 
-    private fun startDownload(item: DownloadItem) {
+    private fun startDownload(item: DownloadItem, forceRecreate: Boolean = false) {
         val request = DownloadPlatformRequest(item)
 
         val handle = DownloadsPlatformDownloader.start(
             request = request,
+            forceRecreate = forceRecreate,
             onProgress = { downloadedBytes, totalBytes ->
                 mutateItem(item.id) { current ->
                     if (current.status != DownloadStatus.Downloading) {
@@ -584,6 +672,39 @@ object DownloadsRepository {
             items = items,
         )
         notifyLiveStatusPlatform()
+        syncWatchdogState(items)
+    }
+
+    private fun syncWatchdogState(items: List<DownloadItem>) {
+        if (items.any { it.status == DownloadStatus.Downloading }) {
+            ensureWatchdogRunning()
+        } else {
+            cancelWatchdog()
+        }
+    }
+
+    private fun ensureWatchdogRunning() {
+        synchronized(watchdogLock) {
+            if (watchdogJob?.isActive == true) return
+            watchdogJob = watchdogScope.launch {
+                while (isActive) {
+                    delay(ACTIVE_HEALTH_CHECK_INTERVAL_MS)
+                    if (!hasLoaded || _uiState.value.items.none { it.status == DownloadStatus.Downloading }) {
+                        break
+                    }
+                    reconcileActiveDownloads()
+                }
+            }
+        }
+    }
+
+    private fun cancelWatchdog() {
+        synchronized(watchdogLock) {
+            watchdogJob?.cancel()
+            watchdogJob = null
+            reconcileJob?.cancel()
+            reconcileJob = null
+        }
     }
 
     private fun notifyLiveStatusPlatform() {

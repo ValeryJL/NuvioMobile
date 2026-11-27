@@ -199,4 +199,51 @@ class AndroidDownloadLifecycleTest {
         assertTrue(shouldRetryAndroidDownload(IOException("reset"), 4, maxRetries = 8))
         assertFalse(shouldRetryAndroidDownload(IOException("reset"), 8, maxRetries = 8))
     }
+
+    @Test
+    fun reconcileActiveDetectsMissingJobAndForceRecreateAllocatesNewBackgroundJob() {
+        val context = RuntimeEnvironment.getApplication()
+        val scheduler = AndroidDownloadScheduler(context)
+        val initial = scheduler.enqueue(downloadItem().copy(fileName = "live-missing.mkv"))
+        val jobScheduler = scheduler.jobScheduler()
+        assertNotNull(jobScheduler.getPendingJob(initial.jobId))
+
+        jobScheduler.cancel(initial.jobId)
+        val reconciled = scheduler.reconcileActive(initial.item)
+        assertEquals(DownloadStatus.Paused, reconciled.status)
+        assertEquals(DownloadPauseReasons.MISSING_JOB, reconciled.pauseReason)
+
+        val recreated = scheduler.enqueue(reconciled, forceRecreate = true)
+        assertEquals(DownloadStatus.Downloading, recreated.item.status)
+        assertNotEquals(initial.jobId, recreated.jobId)
+        assertNotEquals(initial.generation, recreated.generation)
+        assertNotNull(jobScheduler.getPendingJob(recreated.jobId))
+    }
+
+    @Test
+    fun reconcileActivePausesStalledSystemBackoffAfterGraceWindow() {
+        val context = RuntimeEnvironment.getApplication()
+        val scheduler = AndroidDownloadScheduler(context)
+        val transfer = scheduler.enqueue(downloadItem().copy(fileName = "backoff-stall.mkv"))
+        val quotaDetail = DownloadPauseReasons.encodeStopDetail(
+            DownloadPauseReasons.STOP_CATEGORY_QUOTA,
+            "STOP_REASON_QUOTA",
+        )
+        scheduler.recordSystemStop(transfer, quotaDetail, stoppedAtEpochMs = 1_000L)
+
+        val withinGrace = scheduler.reconcileActive(
+            transfer.item,
+            nowMs = 1_000L + AndroidDownloadScheduler.SYSTEM_BACKOFF_STALL_GRACE_MS - 1_000L,
+        )
+        assertEquals(DownloadStatus.Downloading, withinGrace.status)
+        assertNotNull(scheduler.jobScheduler().getPendingJob(transfer.jobId))
+
+        val pastGrace = scheduler.reconcileActive(
+            transfer.item,
+            nowMs = 1_000L + AndroidDownloadScheduler.SYSTEM_BACKOFF_STALL_GRACE_MS + 1_000L,
+        )
+        assertEquals(DownloadStatus.Paused, pastGrace.status)
+        assertEquals("worker_stopped|QUOTA:STOP_REASON_QUOTA", pastGrace.pauseReason)
+        assertEquals(null, scheduler.jobScheduler().getPendingJob(transfer.jobId))
+    }
 }
