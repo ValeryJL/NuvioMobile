@@ -169,7 +169,7 @@ class TraktWatchedSyncAdapterTest {
         }
 
         assertEquals(429, error.status)
-        assertEquals(2, attempts)
+        assertEquals(3, attempts)
     }
 
     private fun response(
