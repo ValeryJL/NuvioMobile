@@ -1,14 +1,19 @@
 package com.nuvio.app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.os.Build
 import com.nuvio.app.features.autosync.AutoSyncPreferencesAndroid
 import android.os.Bundle
 import androidx.activity.compose.setContent
 
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.SystemBarStyle
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.nuvio.app.core.auth.AuthStorage
 import com.nuvio.app.core.network.ServerConfigurationStorage
@@ -21,6 +26,7 @@ import com.nuvio.app.features.addons.AddonStorage
 import com.nuvio.app.features.collection.CollectionMobileSettingsStorage
 import com.nuvio.app.features.collection.CollectionStorage
 import com.nuvio.app.features.debrid.DebridSettingsStorage
+import com.nuvio.app.features.downloads.AndroidBatteryOptimization
 import com.nuvio.app.features.downloads.DownloadsLiveStatusPlatform
 import com.nuvio.app.features.downloads.DownloadsPlatformDownloader
 import com.nuvio.app.features.downloads.DownloadsStorage
@@ -75,6 +81,10 @@ import com.nuvio.app.features.watchprogress.WatchProgressStorage
 
 open class MainActivity : AppCompatActivity() {
     private var pipRemoteActionReceiver: PipRemoteActionReceiver? = null
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+            requestBatteryExemptionIfNeededOnStartup()
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -153,6 +163,9 @@ open class MainActivity : AppCompatActivity() {
         setContent {
             App()
         }
+        if (savedInstanceState == null) {
+            requestStartupBackgroundPermissions()
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -199,5 +212,32 @@ open class MainActivity : AppCompatActivity() {
         val appUrl = (intent?.dataString ?: intent?.getStringExtra(LinkActivity.EXTRA_LINK))?.trim().orEmpty()
         if (appUrl.isBlank()) return
         handleAppUrl(appUrl)
+    }
+
+    private fun requestStartupBackgroundPermissions() {
+        if (hasPromptedStartupPermissionsThisSession) return
+        hasPromptedStartupPermissionsThisSession = true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            requestBatteryExemptionIfNeededOnStartup()
+        }
+    }
+
+    private fun requestBatteryExemptionIfNeededOnStartup() {
+        if (hasPromptedBatteryExemptionThisSession) return
+        if (!AndroidBatteryOptimization.needsExemption(this)) return
+        hasPromptedBatteryExemptionThisSession = true
+        AndroidBatteryOptimization.requestIgnoreBatteryOptimizations(this)
+    }
+
+    companion object {
+        @Volatile
+        private var hasPromptedStartupPermissionsThisSession = false
+
+        @Volatile
+        private var hasPromptedBatteryExemptionThisSession = false
     }
 }

@@ -86,11 +86,96 @@ internal actual object DownloadsLiveStatusPlatform {
         val manager = NotificationManagerCompat.from(context)
         if (item.status == DownloadStatus.Completed || item.status == DownloadStatus.Queued) {
             removeNotification(item.id)
+        } else if (item.status == DownloadStatus.Downloading && DownloadsForegroundService.isHosting(item.id)) {
+            manager.cancel(notificationId(item.id))
+            manager.cancel(notificationId("inactive:${item.id}"))
+            DownloadsForegroundService.updateNotificationIfRunning(context)
         } else {
             val active = item.status == DownloadStatus.Downloading
             manager.cancel(notificationId(if (active) "inactive:${item.id}" else item.id))
             manager.notify(notificationId(if (active) item.id else "inactive:${item.id}"), buildNotification(context, item))
         }
+    }
+
+    internal fun buildIdleForegroundNotification(context: Context): android.app.Notification {
+        ensureNotificationChannel()
+        return NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(com.nuvio.app.R.drawable.ic_notification_small)
+            .setContentTitle(runBlocking { getString(Res.string.downloads_channel_name) })
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .build()
+    }
+
+    internal fun buildForegroundNotification(
+        context: Context,
+        activeItems: List<DownloadItem>,
+    ): android.app.Notification {
+        ensureNotificationChannel()
+        if (activeItems.size == 1) {
+            return buildNotification(context, activeItems.first())
+        }
+        val first = activeItems.firstOrNull() ?: return buildIdleForegroundNotification(context)
+        val totalDownloaded = activeItems.sumOf { it.downloadedBytes.coerceAtLeast(0L) }
+        val knownTotals = activeItems.mapNotNull { it.totalBytes?.takeIf { size -> size > 0L } }
+        val hasCompleteTotal = knownTotals.size == activeItems.size && knownTotals.isNotEmpty()
+        val combinedTotal = if (hasCompleteTotal) knownTotals.sum() else null
+        val downloadedText = formatBytes(totalDownloaded)
+        val subtitle = if (combinedTotal != null) {
+            runBlocking {
+                getString(
+                    Res.string.downloads_live_downloading_with_total,
+                    activeItems.size.toString(),
+                    downloadedText,
+                    formatBytes(combinedTotal),
+                )
+            }
+        } else {
+            runBlocking { getString(Res.string.downloads_live_multiple_summary, downloadedText) }
+        }
+        val launchIntent = Intent().apply {
+            component = AppIconPlatform.currentLauncherComponent(context)
+            action = Intent.ACTION_VIEW
+            data = android.net.Uri.parse(buildDownloadsDeepLinkUrl())
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val launchPendingIntent = PendingIntent.getActivity(
+            context,
+            DOWNLOADS_FOREGROUND_NOTIFICATION_ID,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(com.nuvio.app.R.drawable.ic_notification_small)
+            .setContentTitle(runBlocking { getString(Res.string.downloads_live_multiple_title, activeItems.size) })
+            .setContentText(subtitle)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(subtitle))
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(launchPendingIntent)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .addAction(
+                0,
+                runBlocking { getString(Res.string.compose_action_pause) },
+                buildActionPendingIntent(
+                    context = context,
+                    action = DownloadsNotificationActionReceiver.actionPause,
+                    downloadId = first.id,
+                    fileName = first.fileName,
+                ),
+            )
+        if (combinedTotal != null && combinedTotal > 0L) {
+            val pct = ((totalDownloaded.toDouble() / combinedTotal.toDouble()) * 100.0).toInt().coerceIn(0, 100)
+            builder.setProgress(100, pct, false)
+        } else {
+            builder.setProgress(100, 0, true)
+        }
+        return builder.build()
     }
 
     internal fun removeNotification(downloadId: String) {

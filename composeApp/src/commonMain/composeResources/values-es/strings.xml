@@ -2596,4 +2596,9 @@
     <string name="downloads_season_pack_batch_failed">No se pudieron preparar los capítulos elegidos</string>
     <string name="downloads_restart_background">Reiniciar en segundo plano</string>
     <string name="downloads_error_stalled">La descarga se detuvo sin recibir datos</string>
+    <string name="downloads_live_multiple_title">%1$d descargas en curso</string>
+    <string name="downloads_live_multiple_summary">Descargado %1$s</string>
+    <string name="downloads_battery_banner_title">Ahorro de batería activo</string>
+    <string name="downloads_battery_banner_message">Permití la ejecución sin restricciones para que las descargas no se frenen al bloquear la pantalla.</string>
+    <string name="downloads_battery_banner_action">Permitir</string>
 </resources>

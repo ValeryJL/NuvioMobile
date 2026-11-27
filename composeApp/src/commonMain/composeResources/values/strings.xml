@@ -2643,4 +2643,9 @@
     <string name="downloads_season_pack_batch_failed">Could not prepare selected episodes</string>
     <string name="downloads_restart_background">Restart in background</string>
     <string name="downloads_error_stalled">Download stalled without receiving data</string>
+    <string name="downloads_live_multiple_title">%1$d downloads in progress</string>
+    <string name="downloads_live_multiple_summary">Downloaded %1$s</string>
+    <string name="downloads_battery_banner_title">Battery optimization active</string>
+    <string name="downloads_battery_banner_message">Allow unrestricted background battery usage so downloads do not stop when locking the screen.</string>
+    <string name="downloads_battery_banner_action">Allow</string>
 </resources>

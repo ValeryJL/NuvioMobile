@@ -28,12 +28,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.currentStateAsState
 import com.nuvio.app.core.ui.NuvioActionLabel
+import com.nuvio.app.core.ui.NuvioPrimaryButton
 import com.nuvio.app.core.ui.NuvioScreen
 import com.nuvio.app.core.ui.NuvioScreenHeader
 import com.nuvio.app.core.ui.NuvioSectionLabel
 import com.nuvio.app.core.ui.NuvioStatusModal
+import com.nuvio.app.core.ui.NuvioSurfaceCard
 import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.PlatformBackHandler
@@ -46,6 +51,9 @@ import nuvio.composeapp.generated.resources.action_cancel
 import nuvio.composeapp.generated.resources.action_delete
 import nuvio.composeapp.generated.resources.action_delete_confirm_message
 import nuvio.composeapp.generated.resources.compose_settings_root_downloads_title
+import nuvio.composeapp.generated.resources.downloads_battery_banner_action
+import nuvio.composeapp.generated.resources.downloads_battery_banner_message
+import nuvio.composeapp.generated.resources.downloads_battery_banner_title
 import nuvio.composeapp.generated.resources.downloads_delete_message
 import nuvio.composeapp.generated.resources.downloads_delete_title
 import nuvio.composeapp.generated.resources.downloads_empty_message
@@ -91,6 +99,15 @@ fun DownloadsScreen(
     }
     LaunchedEffect(Unit) {
         DownloadsRepository.requestActiveReconciliation()
+    }
+    var needsBatteryExemption by remember {
+        mutableStateOf(DownloadPowerPlatform.needsBatteryOptimizationExemption())
+    }
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    LaunchedEffect(lifecycleState) {
+        if (lifecycleState == Lifecycle.State.RESUMED) {
+            needsBatteryExemption = DownloadPowerPlatform.needsBatteryOptimizationExemption()
+        }
     }
 
     var selectedShowId by rememberSaveable(initialShowId) { mutableStateOf(initialShowId) }
@@ -150,6 +167,12 @@ fun DownloadsScreen(
                 items = uiState.items,
                 speeds = speeds,
                 watchStatusOf = watchStatusOf,
+                needsBatteryExemption = needsBatteryExemption,
+                onRequestBatteryExemption = {
+                    if (DownloadPowerPlatform.requestBatteryExemption()) {
+                        needsBatteryExemption = DownloadPowerPlatform.needsBatteryOptimizationExemption()
+                    }
+                },
                 onPlay = onOpenDownload,
                 onOpenShow = { item ->
                     onNavigateToShow?.invoke(item.parentMetaId, item.title) ?: run { selectedShowId = item.parentMetaId }
@@ -199,14 +222,49 @@ fun DownloadsScreen(
     }
 }
 
+@Composable
+private fun DownloadsBatteryExemptionCard(
+    onRequestBatteryExemption: () -> Unit,
+) {
+    val tokens = MaterialTheme.nuvio
+    NuvioSurfaceCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s8),
+        ) {
+            Text(
+                text = stringResource(Res.string.downloads_battery_banner_title),
+                style = MaterialTheme.typography.titleMedium,
+                color = tokens.colors.textPrimary,
+            )
+            Text(
+                text = stringResource(Res.string.downloads_battery_banner_message),
+                style = MaterialTheme.typography.bodyMedium,
+                color = tokens.colors.textMuted,
+            )
+            NuvioPrimaryButton(
+                text = stringResource(Res.string.downloads_battery_banner_action),
+                onClick = onRequestBatteryExemption,
+            )
+        }
+    }
+}
+
 private fun LazyListScope.downloadsRootContent(
     items: List<DownloadItem>,
     speeds: Map<String, Long>,
     watchStatusOf: (DownloadItem) -> DownloadWatchStatus,
+    needsBatteryExemption: Boolean,
+    onRequestBatteryExemption: () -> Unit,
     onPlay: (DownloadItem) -> Unit,
     onOpenShow: (DownloadItem) -> Unit,
     onOpenActions: (DownloadItem) -> Unit,
 ) {
+    if (needsBatteryExemption) {
+        item(key = "battery-optimization-banner") {
+            DownloadsBatteryExemptionCard(onRequestBatteryExemption = onRequestBatteryExemption)
+        }
+    }
     if (items.isEmpty()) {
         item(key = "empty") {
             DownloadsEmptyState(

@@ -44,6 +44,7 @@ import org.jetbrains.compose.resources.getString
 internal class AndroidDownloadScheduler(
     val context: Context,
     private val torrentProvider: TorrentSessionProvider = NuvioEngineTorrentSessionProvider(context.applicationContext),
+    internal var preferForegroundService: Boolean = AppFeaturePolicy.downloadForegroundServiceEnabled,
 ) {
     val store = AndroidDownloadStore(File(context.filesDir, "download-transfers"))
     val directory = File(context.filesDir, "downloads")
@@ -56,13 +57,32 @@ internal class AndroidDownloadScheduler(
         val previous = store.get(item.fileName)
         if (forceRecreate && previous != null && previous.item.id == item.id) {
             activeJobs.remove(previous.generation)?.cancel()
+            DownloadsForegroundService.cancelGeneration(previous.generation)
             cancelScheduled(previous)
         }
         val transfer = store.begin(item, forceNewJob = forceRecreate)
         val existing = !forceRecreate && previous?.generation == transfer.generation
-        val alreadyScheduledOrRunning = existing && Build.VERSION.SDK_INT >= 34 &&
-            (activeExecutions.contains(transfer.generation) || jobScheduler().getPendingJob(transfer.jobId) != null)
-        if (alreadyScheduledOrRunning) return transfer
+        val alreadyRunning = existing && (
+            activeExecutions.contains(transfer.generation) ||
+                DownloadsForegroundService.isTrackingOrPending(transfer.generation) ||
+                (Build.VERSION.SDK_INT >= 34 && jobScheduler().getPendingJob(transfer.jobId) != null)
+            )
+        if (alreadyRunning) return transfer
+
+        if (preferForegroundService) {
+            DownloadsForegroundService.markPending(transfer.generation)
+            if (DownloadsForegroundService.startOrSync(context)) {
+                cancelScheduled(transfer)
+                return store.get(item.fileName) ?: transfer
+            }
+            DownloadsForegroundService.clearPending(transfer.generation)
+        }
+
+        scheduleSystemJob(transfer)
+        return store.get(item.fileName) ?: transfer
+    }
+
+    internal fun scheduleSystemJob(transfer: AndroidDownloadTransfer) {
         try {
             if (Build.VERSION.SDK_INT >= 34) {
                 check(jobScheduler().schedule(buildJob(transfer)) == JobScheduler.RESULT_SUCCESS) {
@@ -70,26 +90,27 @@ internal class AndroidDownloadScheduler(
                 }
             } else {
                 val work = OneTimeWorkRequestBuilder<DownloadsTransferWorker>()
-                    .setInputData(workDataOf(FILE_NAME to item.fileName, GENERATION to transfer.generation))
+                    .setInputData(workDataOf(FILE_NAME to transfer.item.fileName, GENERATION to transfer.generation))
                     .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                     .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
                     .build()
                 val operation = WorkManager.getInstance(context).enqueueUniqueWork(
-                    workName(transfer), if (existing) ExistingWorkPolicy.KEEP else ExistingWorkPolicy.REPLACE, work,
+                    workName(transfer),
+                    if (transfer.retryCount > 0) ExistingWorkPolicy.KEEP else ExistingWorkPolicy.REPLACE,
+                    work,
                 )
                 operation.result.addListener({
                     try {
                         operation.result.get()
                     } catch (error: Exception) {
                         fail(transfer, error)
-                        notifyCurrent(item.fileName)
+                        notifyCurrent(transfer.item.fileName)
                     }
                 }, ContextCompat.getMainExecutor(context))
             }
         } catch (error: Exception) {
             fail(transfer, error)
         }
-        return store.get(item.fileName) ?: transfer
     }
 
     @RequiresApi(34)
@@ -127,6 +148,7 @@ internal class AndroidDownloadScheduler(
         if (transfer.item.status == DownloadStatus.Downloading &&
             Build.VERSION.SDK_INT >= 34 &&
             !activeExecutions.contains(transfer.generation) &&
+            !DownloadsForegroundService.isTrackingOrPending(transfer.generation) &&
             jobScheduler().getPendingJob(transfer.jobId) == null
         ) {
             pause(
@@ -150,7 +172,11 @@ internal class AndroidDownloadScheduler(
                 pauseReason = item.pauseReason ?: DownloadPauseReasons.MISSING_TRANSFER_STATE,
             )
         if (transfer.item.status != DownloadStatus.Downloading) return transfer.item
-        if (activeExecutions.contains(transfer.generation)) return transfer.item
+        if (activeExecutions.contains(transfer.generation) ||
+            DownloadsForegroundService.isTrackingOrPending(transfer.generation, nowMs)
+        ) {
+            return transfer.item
+        }
 
         if (!hasBackgroundJob(transfer)) {
             pause(
@@ -210,7 +236,9 @@ internal class AndroidDownloadScheduler(
             )
         }
         activeJobs.remove(transfer.generation)?.cancel()
+        DownloadsForegroundService.cancelGeneration(transfer.generation)
         cancelScheduled(transfer)
+        DownloadsForegroundService.syncIfRunning(context)
         paused?.let { DownloadsLiveStatusPlatform.notifyTransfer(it.item) }
     }
 
@@ -228,9 +256,13 @@ internal class AndroidDownloadScheduler(
         val transfer = store.get(fileName)
         val torrentInfoHash = transfer?.item?.torrentInfoHash
         store.remove(fileName)
-        transfer?.let { activeJobs.remove(it.generation)?.cancel() }
-        transfer?.let(::cancelScheduled)
-        transfer?.let { DownloadsLiveStatusPlatform.removeNotification(it.item.id) }
+        transfer?.let {
+            activeJobs.remove(it.generation)?.cancel()
+            DownloadsForegroundService.cancelGeneration(it.generation)
+            cancelScheduled(it)
+            DownloadsForegroundService.syncIfRunning(context)
+            DownloadsLiveStatusPlatform.removeNotification(it.item.id)
+        }
         cleanupScope.launch {
             lock(fileName).withLock {
                 if (store.get(fileName) == null) {

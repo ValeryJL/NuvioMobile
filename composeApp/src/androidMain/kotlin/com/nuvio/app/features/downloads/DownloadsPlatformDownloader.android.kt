@@ -23,12 +23,14 @@ internal actual object DownloadsPlatformDownloader {
     private val observerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     fun initialize(context: Context) {
+        DownloadPowerPlatform.initialize(context)
         scheduler(context)
     }
 
     @Synchronized
     internal fun scheduler(context: Context): AndroidDownloadScheduler {
         appContext = context.applicationContext
+        DownloadPowerPlatform.initialize(context.applicationContext)
         return downloadScheduler ?: AndroidDownloadScheduler(context.applicationContext).also { downloadScheduler = it }
     }
 

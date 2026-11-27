@@ -23,16 +23,20 @@ class AndroidDownloadQueueTest {
         val context = RuntimeEnvironment.getApplication()
         DownloadsStorage.initialize(context)
         DownloadsPlatformDownloader.initialize(context)
+        DownloadsPlatformDownloader.scheduler(context).preferForegroundService = false
         DownloadsLiveStatusPlatform.initialize(context)
         DownloadsRepository.clearLocalState()
     }
 
     @After
     fun tearDown() {
+        val context = RuntimeEnvironment.getApplication()
         DownloadsRepository.uiState.value.items
             .map { it.id }
             .forEach(DownloadsRepository::cancelDownload)
         DownloadsRepository.clearLocalState()
+        DownloadsPlatformDownloader.scheduler(context).preferForegroundService =
+            AppFeaturePolicy.downloadForegroundServiceEnabled
     }
 
     @Test

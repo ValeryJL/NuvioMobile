@@ -33,7 +33,7 @@ class AndroidDownloadLifecycleTest {
     @Test
     fun scheduledDownloadsArePersistedUserInitiatedTransfers() {
         val context = RuntimeEnvironment.getApplication()
-        val scheduler = AndroidDownloadScheduler(context)
+        val scheduler = AndroidDownloadScheduler(context).apply { preferForegroundService = false }
         val transfer = AndroidDownloadStore(temporary.newFolder()).begin(downloadItem())
 
         val job = scheduler.buildJob(transfer)
@@ -93,7 +93,7 @@ class AndroidDownloadLifecycleTest {
         val context = RuntimeEnvironment.getApplication()
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setBody("complete video"))
-            val scheduler = AndroidDownloadScheduler(context)
+            val scheduler = AndroidDownloadScheduler(context).apply { preferForegroundService = false }
             val item = downloadItem(server.url("/video").toString(), "background").copy(fileName = "background.mkv")
             val transfer = scheduler.store.begin(item)
 
@@ -111,7 +111,7 @@ class AndroidDownloadLifecycleTest {
     @Test
     fun pausedTransferIsNotRestartedBySystemRedelivery(): Unit = runBlocking {
         val context = RuntimeEnvironment.getApplication()
-        val scheduler = AndroidDownloadScheduler(context)
+        val scheduler = AndroidDownloadScheduler(context).apply { preferForegroundService = false }
         val transfer = scheduler.store.begin(downloadItem().copy(fileName = "paused.mkv"))
         scheduler.store.update(transfer.item.fileName, transfer.generation) {
             it.copy(item = it.item.copy(status = DownloadStatus.Paused))
@@ -137,7 +137,7 @@ class AndroidDownloadLifecycleTest {
     @Test
     fun enqueueReschedulesMissingSystemJobOnApi34() {
         val context = RuntimeEnvironment.getApplication()
-        val scheduler = AndroidDownloadScheduler(context)
+        val scheduler = AndroidDownloadScheduler(context).apply { preferForegroundService = false }
         val existing = scheduler.store.begin(downloadItem().copy(fileName = "requeue.mkv"))
         val jobScheduler = scheduler.jobScheduler()
         assertEquals(null, jobScheduler.getPendingJob(existing.jobId))
@@ -152,7 +152,7 @@ class AndroidDownloadLifecycleTest {
     @Test
     fun missingSystemJobRecordsDiagnosticStopReasonOnRestore() {
         val context = RuntimeEnvironment.getApplication()
-        val scheduler = AndroidDownloadScheduler(context)
+        val scheduler = AndroidDownloadScheduler(context).apply { preferForegroundService = false }
         val transfer = scheduler.store.begin(downloadItem().copy(fileName = "timed-out.mkv"))
         val timeoutDetail = DownloadPauseReasons.encodeStopDetail(
             DownloadPauseReasons.STOP_CATEGORY_TIMEOUT,
@@ -178,7 +178,7 @@ class AndroidDownloadLifecycleTest {
                     return MockResponse().setBody("active payload")
                 }
             }
-            val scheduler = AndroidDownloadScheduler(context)
+            val scheduler = AndroidDownloadScheduler(context).apply { preferForegroundService = false }
             val item = downloadItem(server.url("/active").toString(), "active-exec").copy(fileName = "active.mkv")
             val transfer = scheduler.store.begin(item)
             val job = launch(Dispatchers.IO) { scheduler.execute(transfer) { } }
@@ -203,7 +203,7 @@ class AndroidDownloadLifecycleTest {
     @Test
     fun reconcileActiveDetectsMissingJobAndForceRecreateAllocatesNewBackgroundJob() {
         val context = RuntimeEnvironment.getApplication()
-        val scheduler = AndroidDownloadScheduler(context)
+        val scheduler = AndroidDownloadScheduler(context).apply { preferForegroundService = false }
         val initial = scheduler.enqueue(downloadItem().copy(fileName = "live-missing.mkv"))
         val jobScheduler = scheduler.jobScheduler()
         assertNotNull(jobScheduler.getPendingJob(initial.jobId))
@@ -223,7 +223,7 @@ class AndroidDownloadLifecycleTest {
     @Test
     fun reconcileActivePausesStalledSystemBackoffAfterGraceWindow() {
         val context = RuntimeEnvironment.getApplication()
-        val scheduler = AndroidDownloadScheduler(context)
+        val scheduler = AndroidDownloadScheduler(context).apply { preferForegroundService = false }
         val transfer = scheduler.enqueue(downloadItem().copy(fileName = "backoff-stall.mkv"))
         val quotaDetail = DownloadPauseReasons.encodeStopDetail(
             DownloadPauseReasons.STOP_CATEGORY_QUOTA,
