@@ -2629,6 +2629,9 @@
     <string name="downloads_season_pack_scanning">Checking episodes in this source (%1$d / %2$d)…</string>
     <string name="downloads_season_pack_found_summary">%1$d of %2$d episodes found in this source</string>
     <string name="downloads_season_pack_select_all">Select all</string>
+    <string name="downloads_season_pack_unwatched_only">Unwatched only (%1$d)</string>
+    <string name="downloads_season_pack_all_watched">All episodes in this season are already marked watched.</string>
+    <string name="downloads_season_pack_status_watched">Watched</string>
     <string name="downloads_season_pack_single_only">Only this episode matched this torrent or source. It does not appear to include other episodes of the season.</string>
     <string name="downloads_season_pack_load_failed">Could not load the season episode list</string>
     <string name="downloads_season_pack_download_button">Download (%1$d)</string>
@@ -2640,7 +2643,10 @@
     <string name="downloads_season_pack_batch_started">Downloading %1$d, queued %2$d</string>
     <string name="downloads_season_pack_batch_all_queued">%1$d episode(s) queued</string>
     <string name="downloads_season_pack_batch_partial">Queued %1$d of %2$d (%3$d failed to resolve)</string>
+    <string name="downloads_season_pack_batch_partial_storage">Queued %1$d of %2$d (%3$d skipped due to low storage)</string>
+    <string name="downloads_season_pack_batch_insufficient_storage">Not enough free storage space for selected episodes</string>
     <string name="downloads_season_pack_batch_failed">Could not prepare selected episodes</string>
+    <string name="downloads_enqueue_insufficient_storage">Not enough free storage space</string>
     <string name="downloads_restart_background">Restart in background</string>
     <string name="downloads_error_stalled">Download stalled without receiving data</string>
     <string name="downloads_live_multiple_title">%1$d downloads in progress</string>

@@ -5,7 +5,10 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import com.nuvio.app.features.profiles.ProfileRepository
+import com.nuvio.app.features.watched.WatchedRepository
+import com.nuvio.app.features.watchprogress.ResumePromptRepository
 import com.nuvio.app.features.watchprogress.WatchProgressCodec
+import com.nuvio.app.features.watchprogress.toContinueWatchingItem
 import com.nuvio.app.features.watchprogress.WatchProgressPlaybackSession
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import com.nuvio.app.features.watchprogress.WatchProgressStorage
@@ -43,11 +46,13 @@ class ExternalPlaybackProgressTest {
         PlayerSettingsStorage.initialize(context)
         ExternalPlayerPlatform.initialize(context)
         WatchProgressRepository.clearLocalState()
+        WatchedRepository.clearLocalState()
     }
 
     @After
     fun cleanup() {
         WatchProgressRepository.clearLocalState()
+        WatchedRepository.clearLocalState()
         clearPreferences()
     }
 
@@ -114,8 +119,37 @@ class ExternalPlaybackProgressTest {
             ExternalPlaybackResult(result.positionMs, result.durationMs, result.endedByUser),
             fallbackSession = session(),
         )
-        val entry = assertNotNull(WatchProgressRepository.progressForVideo("tt123"))
-        assertTrue(entry.isCompleted)
+        assertTrue(WatchedRepository.isWatched(id = "tt123", type = "movie"))
+        assertNull(WatchProgressRepository.progressForVideo("tt123"))
+    }
+
+    @Test
+    fun mxPlayerCompletionClearsEarlierResumeProgress() = runBlocking {
+        recordExternalPlaybackProgress(ExternalPlaybackResult(1_080_000L, 3_600_000L, endedByUser = true), session())
+        assertNotNull(WatchProgressRepository.progressForVideo("tt123"))
+        recordExternalPlaybackProgress(ExternalPlaybackResult(0L, null, endedByUser = false), session())
+        assertTrue(WatchedRepository.isWatched(id = "tt123", type = "movie"))
+        assertNull(WatchProgressRepository.progressForVideo("tt123"))
+    }
+
+    @Test
+    fun resumePromptRefreshUpdatesAndDismissesOnCompletion() = runBlocking {
+        recordExternalPlaybackProgress(ExternalPlaybackResult(900_000L, 3_600_000L, endedByUser = true), session())
+        val initialEntry = assertNotNull(WatchProgressRepository.progressForVideo("tt123"))
+        val initialPrompt = initialEntry.toContinueWatchingItem()
+
+        recordExternalPlaybackProgress(ExternalPlaybackResult(1_800_000L, 3_600_000L, endedByUser = true), session())
+        val refreshedPrompt = assertNotNull(ResumePromptRepository.refresh(initialPrompt))
+        assertEquals(1_800_000L, refreshedPrompt.resumePositionMs)
+
+        recordExternalPlaybackProgress(ExternalPlaybackResult(3_500_000L, 3_600_000L, endedByUser = true), session())
+        assertNull(ResumePromptRepository.refresh(refreshedPrompt))
+
+        val persisted = WatchProgressRepository.flushPlaybackProgress(
+            session = session(),
+            snapshot = PlayerPlaybackSnapshot(positionMs = 120_000L, durationMs = 3_600_000L, isEnded = false),
+        )
+        assertTrue(persisted)
     }
 
     @Test

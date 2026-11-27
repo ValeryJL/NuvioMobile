@@ -41,6 +41,7 @@ import com.nuvio.app.features.p2p.formatP2pSpeed
 import com.nuvio.app.features.player.skip.internalSkipAction
 import com.nuvio.app.features.servers.ServerStreams
 import com.nuvio.app.features.streams.streamAddonInstanceId
+import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import com.nuvio.app.isIos
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.*
@@ -201,6 +202,9 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi(
     ) {
         val playerSurfaceSourceUrl = if (isP2pPlaybackActive) p2pResolvedSourceUrl else activeSourceUrl
         val playbackKey = activePlaybackKey
+        val lifecycleProgressHandler = remember(playbackKey, playerSurfaceSourceUrl) {
+            PlayerLifecycleProgressHandler()
+        }
         val initialPositionRequestKey = currentInitialPositionRequestKey()
 
         val resolvedAutoEngineState = remember(sourcePlaybackKey) {
@@ -257,6 +261,18 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi(
                         if (snapshot.isEnded) {
                             shouldPlay = false
                             controlsVisible = !playerControlsLocked
+                        }
+                    },
+                    onLifecycleCheckpoint = { snapshot, shouldStopPlayback ->
+                        if (!active.value) return@PlatformPlayerSurface
+                        lifecycleProgressHandler.flush(snapshot, shouldStopPlayback) { latest, stopScrobble ->
+                            if (!updatePlaybackSnapshot(latest, playbackKey)) return@flush false
+                            val durable = WatchProgressRepository.flushPlaybackProgress(
+                                session = playbackSession,
+                                snapshot = latest,
+                            )
+                            if (durable && stopScrobble) emitStopScrobbleForCurrentProgress()
+                            durable
                         }
                     },
                     onError = { message ->

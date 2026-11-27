@@ -27,6 +27,7 @@ import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.getString
 
 private const val ACTIVE_HEALTH_CHECK_INTERVAL_MS = 15_000L
+private const val MIN_FREE_STORAGE_HEADROOM_BYTES = 256L * 1024L * 1024L
 
 object DownloadsRepository {
     private val _uiState = MutableStateFlow(DownloadsUiState())
@@ -42,6 +43,7 @@ object DownloadsRepository {
     private var reconcileJob: Job? = null
     private var hasLoaded = false
     private var nextDownloadOrdinal = 0L
+    internal var availableStorageBytesProvider: () -> Long? = DownloadsPlatformDownloader::availableStorageBytes
 
     fun ensureLoaded() {
         if (hasLoaded) return
@@ -192,11 +194,17 @@ object DownloadsRepository {
         val batchItems = mutableListOf<DownloadItem>()
         val toStart = mutableListOf<DownloadItem>()
         var failedCount = 0
+        var insufficientStorageCount = 0
 
         requests.forEachIndexed { index, request ->
             val createdAt = baseNow + index
             when (val result = prepareSingleUpsert(request, createdAt, currentItems, pendingBatch = batchItems)) {
-                is PreparedUpsert.Failure -> failedCount += 1
+                is PreparedUpsert.Failure -> {
+                    failedCount += 1
+                    if (result.failure == DownloadEnqueueResult.InsufficientStorage) {
+                        insufficientStorageCount += 1
+                    }
+                }
                 is PreparedUpsert.Ready -> {
                     batchItems += result.item
                     if (result.item.status == DownloadStatus.Downloading) {
@@ -217,6 +225,7 @@ object DownloadsRepository {
             startedCount = toStart.size,
             queuedCount = (batchItems.size - toStart.size).coerceAtLeast(0),
             failedCount = failedCount,
+            insufficientStorageCount = insufficientStorageCount,
         )
     }
 
@@ -484,8 +493,20 @@ object DownloadsRepository {
             episodeNumber = request.episodeNumber,
         )
 
-        var replacedExisting = false
         val existing = currentItems.firstOrNull { it.logicalContentKey == logicalKey }
+        val knownIncomingBytes = rawItem.totalBytes
+            ?: request.stream.behaviorHints.videoSize?.takeIf { it > 0L }
+        val storageAvailable = hasSufficientStorageForNewDownload(
+            availableBytes = availableStorageBytesProvider(),
+            incomingTotalBytes = knownIncomingBytes,
+            existingActiveAndQueuedItems = currentItems + pendingBatch,
+            replacingItemId = existing?.id,
+        )
+        if (!storageAvailable) {
+            return PreparedUpsert.Failure(DownloadEnqueueResult.InsufficientStorage)
+        }
+
+        var replacedExisting = false
         if (existing != null) {
             replacedExisting = true
             activeHandles.remove(existing.id)?.cancel()
@@ -836,7 +857,30 @@ internal data class BatchDownloadEnqueueSummary(
     val startedCount: Int,
     val queuedCount: Int,
     val failedCount: Int,
+    val insufficientStorageCount: Int = 0,
 )
+
+internal fun hasSufficientStorageForNewDownload(
+    availableBytes: Long?,
+    incomingTotalBytes: Long?,
+    existingActiveAndQueuedItems: Collection<DownloadItem>,
+    replacingItemId: String? = null,
+    headroomBytes: Long = MIN_FREE_STORAGE_HEADROOM_BYTES,
+): Boolean {
+    val freeBytes = availableBytes ?: return true
+    val pendingRemainingBytes = existingActiveAndQueuedItems
+        .asSequence()
+        .filter { item ->
+            item.id != replacingItemId &&
+                (item.status == DownloadStatus.Downloading || item.status == DownloadStatus.Queued)
+        }
+        .sumOf { item ->
+            ((item.totalBytes ?: 0L) - item.downloadedBytes).coerceAtLeast(0L)
+        }
+    val incomingBytes = incomingTotalBytes?.coerceAtLeast(0L) ?: 0L
+    val requiredBytes = pendingRemainingBytes + incomingBytes + headroomBytes
+    return freeBytes >= requiredBytes
+}
 
 private sealed interface PreparedUpsert {
     data class Ready(val item: DownloadItem, val replacedExisting: Boolean) : PreparedUpsert
@@ -897,7 +941,7 @@ internal fun buildDownloadItemFromStream(
         torrentFilename = null
         torrentTrackers = emptyList()
         sourceUrl = directUrl
-        initialTotalBytes = null
+        initialTotalBytes = stream.behaviorHints.videoSize?.takeIf { it > 0L }
     } else if (stream.needsLocalDebridResolve && stream.p2pInfoHash != null) {
         if (!p2pFeatureEnabled || !platformSupportsTorrentDownloads) {
             return StreamDownloadBuildResult.Failure(DownloadEnqueueResult.UnsupportedFormat)

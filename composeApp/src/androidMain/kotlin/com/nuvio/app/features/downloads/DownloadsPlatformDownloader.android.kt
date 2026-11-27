@@ -130,6 +130,14 @@ internal actual object DownloadsPlatformDownloader {
         downloadScheduler?.applyNetworkPolicy()
     }
 
+    actual fun availableStorageBytes(): Long? {
+        val context = appContext ?: return null
+        val downloadsDir = File(context.filesDir, "downloads").apply { mkdirs() }
+        return runCatching {
+            downloadsDir.takeIf { it.totalSpace > 0L }?.usableSpace
+        }.getOrNull()
+    }
+
     actual fun openDownloadsDirectory(): Boolean {
         val context = appContext ?: return false
         val downloadsDir = File(context.filesDir, "downloads").apply { mkdirs() }

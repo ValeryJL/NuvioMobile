@@ -17,6 +17,11 @@ import com.nuvio.app.features.streams.StreamItem
 import com.nuvio.app.features.streams.StreamParser
 import com.nuvio.app.features.streams.isSupportedDownload
 import com.nuvio.app.features.streams.streamAddonInstanceId
+import com.nuvio.app.features.watched.WatchedRepository
+import com.nuvio.app.features.watching.application.WatchingState
+import com.nuvio.app.features.watchprogress.WatchProgressEntry
+import com.nuvio.app.features.watchprogress.WatchProgressRepository
+import com.nuvio.app.features.watchprogress.buildPlaybackVideoId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
@@ -37,6 +42,7 @@ internal data class SeasonPackEpisodeCandidate(
     val episodeNumber: Int,
     val matchedStream: StreamItem?,
     val existingDownload: DownloadItem?,
+    val isWatched: Boolean = false,
     val checked: Boolean,
 ) {
     val isAlreadyInDownloads: Boolean
@@ -190,9 +196,15 @@ internal object SeasonPackDownloadResolver {
             return@channelFlow
         }
 
-        val meta = withContext(Dispatchers.Main.immediate) {
-            MetaDetailsRepository.peek(type = parentMetaType, id = parentMetaId)
-                ?: MetaDetailsRepository.fetch(type = parentMetaType, id = parentMetaId, cacheResult = true)
+        val (meta, watchedKeys, progressByVideoId) = withContext(Dispatchers.Main.immediate) {
+            WatchedRepository.ensureLoaded()
+            WatchProgressRepository.ensureLoaded()
+            Triple(
+                MetaDetailsRepository.peek(type = parentMetaType, id = parentMetaId)
+                    ?: MetaDetailsRepository.fetch(type = parentMetaType, id = parentMetaId, cacheResult = true),
+                WatchedRepository.uiState.value.watchedKeys,
+                WatchProgressRepository.uiState.value.entries.associateBy { it.videoId },
+            )
         }
         val existingByLogicalKey = DownloadsRepository.uiState.value.items
             .associateBy { it.logicalContentKey }
@@ -242,6 +254,14 @@ internal object SeasonPackDownloadResolver {
                 episodeNumber = ep,
                 matchedStream = if (isCurrent) anchorStream else null,
                 existingDownload = existingByLogicalKey[logicalKey],
+                isWatched = isSeasonPackEpisodeWatched(
+                    parentMetaId = parentMetaId,
+                    parentMetaType = parentMetaType,
+                    seasonNumber = seasonNumber,
+                    episode = video,
+                    watchedKeys = watchedKeys,
+                    progressByVideoId = progressByVideoId,
+                ),
                 checked = isCurrent,
             )
         }.toMutableList()
@@ -432,4 +452,34 @@ internal object SeasonPackDownloadResolver {
         }
         return summary.copy(failedCount = summary.failedCount + resolveFailures)
     }
+}
+
+internal fun isSeasonPackEpisodeWatched(
+    parentMetaId: String,
+    parentMetaType: String,
+    seasonNumber: Int,
+    episode: MetaVideo,
+    watchedKeys: Set<String>,
+    progressByVideoId: Map<String, WatchProgressEntry>,
+): Boolean {
+    val episodeNumber = episode.episode
+    val episodeVideoId = if (episodeNumber != null) {
+        buildPlaybackVideoId(
+            parentMetaId = parentMetaId,
+            seasonNumber = seasonNumber,
+            episodeNumber = episodeNumber,
+            fallbackVideoId = episode.id,
+        )
+    } else {
+        episode.id
+    }
+    if (progressByVideoId[episodeVideoId]?.isEffectivelyCompleted == true) {
+        return true
+    }
+    return WatchingState.isEpisodeWatched(
+        watchedKeys = watchedKeys,
+        metaType = parentMetaType,
+        metaId = parentMetaId,
+        episode = episode,
+    )
 }

@@ -37,5 +37,7 @@ internal expect object DownloadsPlatformDownloader {
 
     fun onWifiOnlyChanged(wifiOnly: Boolean)
 
+    fun availableStorageBytes(): Long?
+
     fun openDownloadsDirectory(): Boolean
 }

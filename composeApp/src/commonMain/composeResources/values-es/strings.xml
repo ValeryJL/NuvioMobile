@@ -2582,6 +2582,9 @@
     <string name="downloads_season_pack_scanning">Buscando capítulos en esta fuente (%1$d / %2$d)…</string>
     <string name="downloads_season_pack_found_summary">%1$d de %2$d capítulos encontrados en esta fuente</string>
     <string name="downloads_season_pack_select_all">Seleccionar todos</string>
+    <string name="downloads_season_pack_unwatched_only">Solo no vistos (%1$d)</string>
+    <string name="downloads_season_pack_all_watched">Todos los capítulos de esta temporada ya están vistos.</string>
+    <string name="downloads_season_pack_status_watched">Visto</string>
     <string name="downloads_season_pack_single_only">Solo este capítulo coincide con este torrent o fuente. No parece incluir otros capítulos de la temporada.</string>
     <string name="downloads_season_pack_load_failed">No se pudo cargar la lista de capítulos de la temporada</string>
     <string name="downloads_season_pack_download_button">Descargar (%1$d)</string>
@@ -2593,7 +2596,10 @@
     <string name="downloads_season_pack_batch_started">Descargando %1$d, en cola %2$d</string>
     <string name="downloads_season_pack_batch_all_queued">%1$d capítulo(s) en cola</string>
     <string name="downloads_season_pack_batch_partial">Encolados %1$d de %2$d (%3$d fallaron al resolver)</string>
+    <string name="downloads_season_pack_batch_partial_storage">Encolados %1$d de %2$d (%3$d omitidos por falta de espacio)</string>
+    <string name="downloads_season_pack_batch_insufficient_storage">No hay suficiente espacio libre en el dispositivo</string>
     <string name="downloads_season_pack_batch_failed">No se pudieron preparar los capítulos elegidos</string>
+    <string name="downloads_enqueue_insufficient_storage">No hay suficiente espacio libre en el dispositivo</string>
     <string name="downloads_restart_background">Reiniciar en segundo plano</string>
     <string name="downloads_error_stalled">La descarga se detuvo sin recibir datos</string>
     <string name="downloads_live_multiple_title">%1$d descargas en curso</string>

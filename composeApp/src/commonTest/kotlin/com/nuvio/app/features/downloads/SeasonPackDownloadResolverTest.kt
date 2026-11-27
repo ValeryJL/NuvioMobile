@@ -1,7 +1,10 @@
 package com.nuvio.app.features.downloads
 
+import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.streams.StreamBehaviorHints
 import com.nuvio.app.features.streams.StreamItem
+import com.nuvio.app.features.watched.watchedItemKey
+import com.nuvio.app.features.watchprogress.WatchProgressEntry
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -180,5 +183,62 @@ class SeasonPackDownloadResolverTest {
             ),
         )
         assertEquals(samePack.url, matched.url)
+    }
+
+    @Test
+    fun isSeasonPackEpisodeWatchedDetectsWatchedKeysAndCompletedProgress() {
+        val watchedEpisode = MetaVideo(id = "ttshow:1:1", title = "Ep 1", season = 1, episode = 1)
+        val completedByProgress = MetaVideo(id = "ttshow:1:2", title = "Ep 2", season = 1, episode = 2)
+        val unwatchedEpisode = MetaVideo(id = "ttshow:1:3", title = "Ep 3", season = 1, episode = 3)
+
+        val watchedKeys = setOf(
+            watchedItemKey(type = "series", id = "ttshow", season = 1, episode = 1),
+        )
+        val progressByVideoId = mapOf(
+            "ttshow:1:2" to WatchProgressEntry(
+                contentType = "series",
+                parentMetaId = "ttshow",
+                parentMetaType = "series",
+                videoId = "ttshow:1:2",
+                title = "Show",
+                seasonNumber = 1,
+                episodeNumber = 2,
+                lastPositionMs = 1_000_000L,
+                durationMs = 1_000_000L,
+                lastUpdatedEpochMs = 1L,
+                isCompleted = true,
+            ),
+        )
+
+        assertTrue(
+            isSeasonPackEpisodeWatched(
+                parentMetaId = "ttshow",
+                parentMetaType = "series",
+                seasonNumber = 1,
+                episode = watchedEpisode,
+                watchedKeys = watchedKeys,
+                progressByVideoId = progressByVideoId,
+            ),
+        )
+        assertTrue(
+            isSeasonPackEpisodeWatched(
+                parentMetaId = "ttshow",
+                parentMetaType = "series",
+                seasonNumber = 1,
+                episode = completedByProgress,
+                watchedKeys = watchedKeys,
+                progressByVideoId = progressByVideoId,
+            ),
+        )
+        assertFalse(
+            isSeasonPackEpisodeWatched(
+                parentMetaId = "ttshow",
+                parentMetaType = "series",
+                seasonNumber = 1,
+                episode = unwatchedEpisode,
+                watchedKeys = watchedKeys,
+                progressByVideoId = progressByVideoId,
+            ),
+        )
     }
 }

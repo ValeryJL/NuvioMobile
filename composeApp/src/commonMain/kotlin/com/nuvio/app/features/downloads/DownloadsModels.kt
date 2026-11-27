@@ -5,6 +5,7 @@ import com.nuvio.app.features.streams.StreamSubtitle
 import kotlinx.serialization.Serializable
 import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.downloads_enqueue_insufficient_storage
 import nuvio.composeapp.generated.resources.downloads_enqueue_missing_url
 import nuvio.composeapp.generated.resources.downloads_enqueue_queued
 import nuvio.composeapp.generated.resources.downloads_enqueue_replaced
@@ -102,7 +103,8 @@ enum class DownloadEnqueueResult {
     Queued,
     Replaced,
     MissingUrl,
-    UnsupportedFormat;
+    UnsupportedFormat,
+    InsufficientStorage;
 
     fun toastMessage(): String = runBlocking {
         when (this@DownloadEnqueueResult) {
@@ -111,6 +113,7 @@ enum class DownloadEnqueueResult {
             Replaced -> getString(Res.string.downloads_enqueue_replaced)
             MissingUrl -> getString(Res.string.downloads_enqueue_missing_url)
             UnsupportedFormat -> getString(Res.string.downloads_enqueue_unsupported_format)
+            InsufficientStorage -> getString(Res.string.downloads_enqueue_insufficient_storage)
         }
     }
 }

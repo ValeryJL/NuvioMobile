@@ -24,6 +24,7 @@ class AndroidDownloadQueueTest {
         DownloadsStorage.initialize(context)
         DownloadsStorage.saveWifiOnly(true)
         DownloadsSettingsRepository.resetForTesting()
+        DownloadsRepository.availableStorageBytesProvider = DownloadsPlatformDownloader::availableStorageBytes
         DownloadsPlatformDownloader.initialize(context)
         DownloadsPlatformDownloader.scheduler(context).apply {
             preferForegroundService = false
@@ -42,6 +43,7 @@ class AndroidDownloadQueueTest {
         DownloadsRepository.clearLocalState()
         DownloadsStorage.saveWifiOnly(true)
         DownloadsSettingsRepository.resetForTesting()
+        DownloadsRepository.availableStorageBytesProvider = DownloadsPlatformDownloader::availableStorageBytes
         DownloadsPlatformDownloader.scheduler(context).apply {
             preferForegroundService = AppFeaturePolicy.downloadForegroundServiceEnabled
             unmeteredNetworkAvailable = { isAndroidUnmeteredNetworkAvailable(context) }
@@ -179,7 +181,113 @@ class AndroidDownloadQueueTest {
         assertNotNull(scheduler.jobScheduler().getPendingJob(resumedEp1Transfer.jobId))
     }
 
-    private fun httpBatchRequest(episodeNumber: Int): StreamBatchDownloadRequest =
+    @Test
+    fun enqueueRejectsDownloadsWhenStorageInsufficientWithoutDeletingExisting() {
+        val gb = 1024L * 1024L * 1024L
+        DownloadsRepository.availableStorageBytesProvider = { 10L * gb }
+        val firstResult = DownloadsRepository.enqueueFromStream(
+            contentType = "movie",
+            videoId = "tt-movie",
+            parentMetaId = "tt-movie",
+            parentMetaType = "movie",
+            title = "Large Movie",
+            logo = null,
+            poster = null,
+            background = null,
+            seasonNumber = null,
+            episodeNumber = null,
+            episodeTitle = null,
+            episodeThumbnail = null,
+            stream = StreamItem(
+                name = "HTTP 1080p",
+                url = "https://example.com/movie-small.mp4",
+                addonName = "TestAddon",
+                addonId = "addon:test:https://addon.example/manifest.json",
+                behaviorHints = com.nuvio.app.features.streams.StreamBehaviorHints(videoSize = 1L * gb),
+            ),
+        )
+        assertEquals(DownloadEnqueueResult.Started, firstResult)
+
+        // Attempting to replace with a 20 GB file when only 10 GB is free must fail and keep the existing download.
+        val replaceResult = DownloadsRepository.enqueueFromStream(
+            contentType = "movie",
+            videoId = "tt-movie",
+            parentMetaId = "tt-movie",
+            parentMetaType = "movie",
+            title = "Large Movie",
+            logo = null,
+            poster = null,
+            background = null,
+            seasonNumber = null,
+            episodeNumber = null,
+            episodeTitle = null,
+            episodeThumbnail = null,
+            stream = StreamItem(
+                name = "HTTP 4K",
+                url = "https://example.com/movie-4k.mp4",
+                addonName = "TestAddon",
+                addonId = "addon:test:https://addon.example/manifest.json",
+                behaviorHints = com.nuvio.app.features.streams.StreamBehaviorHints(videoSize = 20L * gb),
+            ),
+        )
+        assertEquals(DownloadEnqueueResult.InsufficientStorage, replaceResult)
+        assertEquals(
+            "https://example.com/movie-small.mp4",
+            DownloadsRepository.uiState.value.items.single().sourceUrl,
+        )
+
+        // Even when file size is unknown, less than 256 MB headroom is rejected.
+        DownloadsRepository.availableStorageBytesProvider = { 100L * 1024L * 1024L }
+        val lowHeadroomResult = DownloadsRepository.enqueueFromStream(
+            contentType = "movie",
+            videoId = "tt-other",
+            parentMetaId = "tt-other",
+            parentMetaType = "movie",
+            title = "Other Movie",
+            logo = null,
+            poster = null,
+            background = null,
+            seasonNumber = null,
+            episodeNumber = null,
+            episodeTitle = null,
+            episodeThumbnail = null,
+            stream = StreamItem(
+                name = "HTTP",
+                url = "https://example.com/other.mp4",
+                addonName = "TestAddon",
+                addonId = "addon:test:https://addon.example/manifest.json",
+            ),
+        )
+        assertEquals(DownloadEnqueueResult.InsufficientStorage, lowHeadroomResult)
+    }
+
+    @Test
+    fun batchEnqueueStopsOnceCumulativeRemainingStorageExceedsFreeSpace() {
+        val gb = 1024L * 1024L * 1024L
+        // 4.5 GB free allows two 2 GB episodes (4 GB + 256 MB headroom <= 4.5 GB), rejecting ep 3 and ep 4.
+        DownloadsRepository.availableStorageBytesProvider = { (4L * gb) + (512L * 1024L * 1024L) }
+
+        val requests = (1..4).map { ep ->
+            httpBatchRequest(ep, videoSizeBytes = 2L * gb)
+        }
+        val summary = DownloadsRepository.enqueueBatchFromStreams(requests)
+
+        assertEquals(
+            BatchDownloadEnqueueSummary(
+                startedCount = 2,
+                queuedCount = 0,
+                failedCount = 2,
+                insufficientStorageCount = 2,
+            ),
+            summary,
+        )
+        assertEquals(listOf(1, 2), DownloadsRepository.uiState.value.items.mapNotNull { it.episodeNumber })
+    }
+
+    private fun httpBatchRequest(
+        episodeNumber: Int,
+        videoSizeBytes: Long? = null,
+    ): StreamBatchDownloadRequest =
         StreamBatchDownloadRequest(
             contentType = "series",
             videoId = "tt-series:1:$episodeNumber",
@@ -198,6 +306,7 @@ class AndroidDownloadQueueTest {
                 url = "https://example.com/series/s01e0$episodeNumber.mp4",
                 addonName = "TestAddon",
                 addonId = "addon:test:https://addon.example/manifest.json",
+                behaviorHints = com.nuvio.app.features.streams.StreamBehaviorHints(videoSize = videoSizeBytes),
             ),
         )
 }

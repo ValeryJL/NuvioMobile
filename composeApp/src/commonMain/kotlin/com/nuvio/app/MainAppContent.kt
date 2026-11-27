@@ -540,6 +540,7 @@ internal fun MainAppContent(
     LaunchedEffect(appContentGeneration) {
         if (!ownsAppRuntime) return@LaunchedEffect
         NetworkStatusRepository.ensureStarted()
+        WatchProgressSourceCoordinator.ensureStarted()
         EpisodeReleaseNotificationsRepository.refreshAsync()
         kotlinx.coroutines.delay(5_000)
         initialHomeReady = true
@@ -726,8 +727,24 @@ internal fun MainAppContent(
         if (resumePromptItem != null) return@LaunchedEffect
         if (currentRoute is StreamRoute || currentRoute is PlayerRoute || currentRoute is PartyRoute) return@LaunchedEffect
         if (showResumePromptOnLaunch) {
+            // Give the account's latest progress a moment to arrive when online, so the prompt
+            // shows where playback really stopped, also when it continued on another device.
+            if (networkCondition == NetworkCondition.Online) {
+                kotlinx.coroutines.withTimeoutOrNull(4_000L) {
+                    WatchProgressRepository.uiState.first { it.hasLoadedRemoteProgress }
+                }
+            }
             resumePromptItem = ResumePromptRepository.consumeResumePrompt()
         }
+    }
+
+    // While the prompt is showing, follow newer progress from sync instead of keeping stale data.
+    LaunchedEffect(resumePromptItem?.videoId) {
+        val videoId = resumePromptItem?.videoId ?: return@LaunchedEffect
+        WatchProgressRepository.uiState
+            .map { state -> state.entries.filter { it.videoId == videoId }.maxByOrNull { it.lastUpdatedEpochMs } }
+            .distinctUntilChanged()
+            .collect { resumePromptItem = resumePromptItem?.let(ResumePromptRepository::refresh) }
     }
 
     LaunchedEffect(currentRoute) {

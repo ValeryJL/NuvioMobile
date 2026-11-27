@@ -1194,9 +1194,10 @@ object WatchProgressRepository {
         session: WatchProgressPlaybackSession,
         snapshot: PlayerPlaybackSnapshot,
         syncRemote: Boolean = true,
-    ) {
+    ): Boolean {
         ensureLoaded()
         upsert(session = session, snapshot = snapshot, persist = true, syncRemote = syncRemote)
+        return WatchProgressStorage.flushPendingWrites()
     }
 
     fun applyExternalProgress(entries: List<WatchProgressEntry>) {
@@ -1429,6 +1430,13 @@ object WatchProgressRepository {
 
         if (entry.parentMetaType.equals("series", ignoreCase = true)) {
             ContinueWatchingPreferencesRepository.removeDismissedNextUpKeysForContent(entry.parentMetaId)
+        }
+
+        if (syncRemote && progressProvider == null && entry.isCompleted && entry.durationMs <= 0L) {
+            // No duration to sync (MX Player completion): record it like "Mark as watched".
+            clearProgress(videoId = entry.videoId, parentMetaId = entry.parentMetaId)
+            WatchingActions.onProgressEntryUpdated(entry, syncRemote = syncRemote)
+            return
         }
 
         upsertLocalEntry(entry)

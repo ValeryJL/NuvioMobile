@@ -462,7 +462,16 @@ fun StreamsScreen(
                         )
                         val totalEnqueued = summary.startedCount + summary.queuedCount
                         val toastText = when {
+                            totalEnqueued == 0 && summary.insufficientStorageCount > 0 ->
+                                getString(Res.string.downloads_season_pack_batch_insufficient_storage)
                             totalEnqueued == 0 -> getString(Res.string.downloads_season_pack_batch_failed)
+                            summary.insufficientStorageCount > 0 &&
+                                summary.insufficientStorageCount == summary.failedCount -> getString(
+                                Res.string.downloads_season_pack_batch_partial_storage,
+                                totalEnqueued,
+                                selections.size,
+                                summary.insufficientStorageCount,
+                            )
                             summary.failedCount > 0 -> getString(
                                 Res.string.downloads_season_pack_batch_partial,
                                 totalEnqueued,

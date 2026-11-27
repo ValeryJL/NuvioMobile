@@ -23,9 +23,11 @@ import platform.Foundation.NSError
 import platform.Foundation.NSDate
 import platform.Foundation.NSData
 import platform.Foundation.NSFileManager
+import platform.Foundation.NSFileSystemFreeSize
 import platform.Foundation.NSHTTPURLResponse
 import platform.Foundation.NSHomeDirectory
 import platform.Foundation.NSMutableURLRequest
+import platform.Foundation.NSNumber
 import platform.Foundation.NSOperationQueue
 import platform.Foundation.NSURL
 import platform.Foundation.NSURLIsExcludedFromBackupKey
@@ -199,6 +201,14 @@ internal actual object DownloadsPlatformDownloader {
     }
 
     actual fun onWifiOnlyChanged(wifiOnly: Boolean) {}
+
+    actual fun availableStorageBytes(): Long? {
+        val attrs = NSFileManager.defaultManager.attributesOfFileSystemForPath(
+            path = downloadsDirectoryPath(),
+            error = null,
+        ) ?: return null
+        return (attrs[NSFileSystemFreeSize] as? NSNumber)?.longLongValue
+    }
 
     actual fun openDownloadsDirectory(): Boolean {
         val url = NSURL.fileURLWithPath(downloadsDirectoryPath())

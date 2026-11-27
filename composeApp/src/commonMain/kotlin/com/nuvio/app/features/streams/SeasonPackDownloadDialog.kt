@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.selection.triStateToggleable
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -44,6 +46,7 @@ import com.nuvio.app.features.downloads.SeasonPackEpisodeCandidate
 import com.nuvio.app.features.downloads.SeasonPackLookupProgress
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_cancel
+import nuvio.composeapp.generated.resources.downloads_season_pack_all_watched
 import nuvio.composeapp.generated.resources.downloads_season_pack_download_button
 import nuvio.composeapp.generated.resources.downloads_season_pack_found_summary
 import nuvio.composeapp.generated.resources.downloads_season_pack_load_failed
@@ -55,7 +58,9 @@ import nuvio.composeapp.generated.resources.downloads_season_pack_status_checkin
 import nuvio.composeapp.generated.resources.downloads_season_pack_status_completed
 import nuvio.composeapp.generated.resources.downloads_season_pack_status_in_progress
 import nuvio.composeapp.generated.resources.downloads_season_pack_status_missing
+import nuvio.composeapp.generated.resources.downloads_season_pack_status_watched
 import nuvio.composeapp.generated.resources.downloads_season_pack_title
+import nuvio.composeapp.generated.resources.downloads_season_pack_unwatched_only
 import org.jetbrains.compose.resources.stringResource
 
 @Composable
@@ -82,6 +87,9 @@ internal fun SeasonPackDownloadDialog(
     var selectedEpisodeNumbers by remember(anchorStream, seasonNumber, episodeNumber) {
         mutableStateOf(setOf(episodeNumber))
     }
+    var userToggledUnwatchedOnly by remember(anchorStream, seasonNumber, episodeNumber) {
+        mutableStateOf<Boolean?>(null)
+    }
 
     LaunchedEffect(anchorStream, type, parentMetaId, parentMetaType, currentVideoId, seasonNumber, episodeNumber) {
         SeasonPackDownloadResolver.observeSeasonPackLookup(
@@ -100,7 +108,17 @@ internal fun SeasonPackDownloadDialog(
     }
 
     val currentProgress = progress
-    val selectableEpisodes = currentProgress?.episodes?.filter { it.isSelectable }.orEmpty()
+    val allEpisodes = currentProgress?.episodes.orEmpty()
+    val watchedEpisodesCount = allEpisodes.count { it.isWatched }
+    val unwatchedEpisodesCount = allEpisodes.size - watchedEpisodesCount
+    val currentEpisodeWatched = allEpisodes.firstOrNull { it.episodeNumber == episodeNumber }?.isWatched == true
+    val isUnwatchedOnly = userToggledUnwatchedOnly ?: (watchedEpisodesCount > 0 && !currentEpisodeWatched)
+    val displayedEpisodes = if (isUnwatchedOnly) {
+        allEpisodes.filter { !it.isWatched }
+    } else {
+        allEpisodes
+    }
+    val selectableEpisodes = displayedEpisodes.filter { it.isSelectable }
     val selectableNumbers = selectableEpisodes.map { it.episodeNumber }.toSet()
     val effectiveSelected = selectedEpisodeNumbers.intersect(selectableNumbers)
     val toggleState = when {
@@ -170,6 +188,51 @@ internal fun SeasonPackDownloadDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = tokens.colors.textMuted,
                 )
+                if (watchedEpisodesCount > 0) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(tokens.shapes.compactCard)
+                            .background(
+                                if (isUnwatchedOnly) {
+                                    tokens.colors.accent.copy(alpha = tokens.opacity.subtle)
+                                } else {
+                                    tokens.colors.textPrimary.copy(alpha = tokens.opacity.subtle)
+                                },
+                            )
+                            .toggleable(
+                                value = isUnwatchedOnly,
+                                enabled = !isSubmitting,
+                                role = Role.Checkbox,
+                                onValueChange = { userToggledUnwatchedOnly = it },
+                            )
+                            .padding(horizontal = NuvioTokens.Space.s12, vertical = NuvioTokens.Space.s8),
+                        horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s10),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = isUnwatchedOnly,
+                            onCheckedChange = null,
+                            enabled = !isSubmitting,
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = tokens.colors.accent,
+                                uncheckedColor = tokens.colors.textSecondary,
+                                checkmarkColor = tokens.colors.onAccent,
+                            ),
+                        )
+                        Text(
+                            text = stringResource(
+                                Res.string.downloads_season_pack_unwatched_only,
+                                unwatchedEpisodesCount,
+                            ),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = tokens.colors.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
                 if (selectableEpisodes.size > 1) {
                     Row(
                         modifier = Modifier
@@ -236,54 +299,67 @@ internal fun SeasonPackDownloadDialog(
                 }
             }
 
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = NuvioTokens.Space.s80 + NuvioTokens.Space.s80 + NuvioTokens.Space.s80 + NuvioTokens.Space.s40),
-                verticalArrangement = Arrangement.spacedBy(tokens.spacing.controlGap),
-            ) {
-                items(
-                    items = currentProgress.episodes,
-                    key = { "${it.seasonNumber}:${it.episodeNumber}:${it.video.id}" },
-                ) { candidate ->
-                    val statusDescription = when {
-                        candidate.existingDownload?.status == DownloadStatus.Completed ->
-                            stringResource(Res.string.downloads_season_pack_status_completed)
-                        candidate.isAlreadyInDownloads ->
-                            stringResource(Res.string.downloads_season_pack_status_in_progress)
-                        !candidate.checked ->
-                            stringResource(Res.string.downloads_season_pack_status_checking)
-                        candidate.matchedStream == null ->
-                            stringResource(Res.string.downloads_season_pack_status_missing)
-                        else ->
-                            stringResource(Res.string.downloads_season_pack_status_available)
-                    }
-                    val titleText = buildString {
-                        append('S')
-                        append(candidate.seasonNumber.toString().padStart(2, '0'))
-                        append('E')
-                        append(candidate.episodeNumber.toString().padStart(2, '0'))
-                        val epTitle = candidate.video.title.trim()
-                        if (epTitle.isNotEmpty()) {
-                            append(" • ")
-                            append(epTitle)
+            if (displayedEpisodes.isEmpty() && isUnwatchedOnly) {
+                Text(
+                    text = stringResource(Res.string.downloads_season_pack_all_watched),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = tokens.colors.textMuted,
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = NuvioTokens.Space.s80 + NuvioTokens.Space.s80 + NuvioTokens.Space.s80 + NuvioTokens.Space.s40),
+                    verticalArrangement = Arrangement.spacedBy(tokens.spacing.controlGap),
+                ) {
+                    items(
+                        items = displayedEpisodes,
+                        key = { "${it.seasonNumber}:${it.episodeNumber}:${it.video.id}" },
+                    ) { candidate ->
+                        val baseStatusDescription = when {
+                            candidate.existingDownload?.status == DownloadStatus.Completed ->
+                                stringResource(Res.string.downloads_season_pack_status_completed)
+                            candidate.isAlreadyInDownloads ->
+                                stringResource(Res.string.downloads_season_pack_status_in_progress)
+                            !candidate.checked ->
+                                stringResource(Res.string.downloads_season_pack_status_checking)
+                            candidate.matchedStream == null ->
+                                stringResource(Res.string.downloads_season_pack_status_missing)
+                            else ->
+                                stringResource(Res.string.downloads_season_pack_status_available)
                         }
-                    }
-                    val isChecked = candidate.isSelectable && candidate.episodeNumber in effectiveSelected
-                    DialogOption(
-                        text = titleText,
-                        description = statusDescription,
-                        selected = isChecked,
-                        enabled = !isSubmitting && candidate.isSelectable,
-                        role = Role.Checkbox,
-                        onClick = {
-                            selectedEpisodeNumbers = if (candidate.episodeNumber in selectedEpisodeNumbers) {
-                                selectedEpisodeNumbers - candidate.episodeNumber
-                            } else {
-                                selectedEpisodeNumbers + candidate.episodeNumber
+                        val statusDescription = if (candidate.isWatched && !isUnwatchedOnly) {
+                            "$baseStatusDescription • ${stringResource(Res.string.downloads_season_pack_status_watched)}"
+                        } else {
+                            baseStatusDescription
+                        }
+                        val titleText = buildString {
+                            append('S')
+                            append(candidate.seasonNumber.toString().padStart(2, '0'))
+                            append('E')
+                            append(candidate.episodeNumber.toString().padStart(2, '0'))
+                            val epTitle = candidate.video.title.trim()
+                            if (epTitle.isNotEmpty()) {
+                                append(" • ")
+                                append(epTitle)
                             }
-                        },
-                    )
+                        }
+                        val isChecked = candidate.isSelectable && candidate.episodeNumber in effectiveSelected
+                        DialogOption(
+                            text = titleText,
+                            description = statusDescription,
+                            selected = isChecked,
+                            enabled = !isSubmitting && candidate.isSelectable,
+                            role = Role.Checkbox,
+                            onClick = {
+                                selectedEpisodeNumbers = if (candidate.episodeNumber in selectedEpisodeNumbers) {
+                                    selectedEpisodeNumbers - candidate.episodeNumber
+                                } else {
+                                    selectedEpisodeNumbers + candidate.episodeNumber
+                                }
+                            },
+                        )
+                    }
                 }
             }
         }
