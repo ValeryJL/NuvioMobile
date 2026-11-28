@@ -84,8 +84,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.auth.AuthRepository
+import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.auth.DeviceLinkAuthRepository
 import com.nuvio.app.core.auth.DeviceLinkAuthState
+import com.nuvio.app.core.auth.SignUpOutcome
 import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.features.settings.AppBrandWordmark
 import kotlin.math.abs
@@ -94,6 +96,17 @@ import kotlin.math.PI
 import kotlin.math.sin
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.auth_mfa_code_placeholder
+import nuvio.composeapp.generated.resources.auth_mfa_subtitle
+import nuvio.composeapp.generated.resources.auth_mfa_subtitle_email
+import nuvio.composeapp.generated.resources.auth_mfa_switch_account
+import nuvio.composeapp.generated.resources.auth_mfa_title
+import nuvio.composeapp.generated.resources.auth_mfa_verify
+import nuvio.composeapp.generated.resources.auth_signup_back_to_sign_in
+import nuvio.composeapp.generated.resources.auth_signup_confirm_message
+import nuvio.composeapp.generated.resources.auth_signup_confirm_title
+import nuvio.composeapp.generated.resources.auth_signup_resend
+import nuvio.composeapp.generated.resources.auth_signup_resent
 import nuvio.composeapp.generated.resources.compose_auth_already_have_account
 import nuvio.composeapp.generated.resources.compose_auth_continue_without_account
 import nuvio.composeapp.generated.resources.compose_auth_create_account
@@ -188,20 +201,27 @@ private fun largeAuthFormMetrics(scale: Float): AuthFormMetrics = LargeAuthFormM
 fun AuthScreen(
     modifier: Modifier = Modifier,
 ) {
+    val authState by AuthRepository.state.collectAsStateWithLifecycle()
     val authError by AuthRepository.error.collectAsStateWithLifecycle()
     val deviceLinkAuthState by DeviceLinkAuthRepository.state.collectAsStateWithLifecycle()
     val serverConnectionState by ServerConnectionController.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
+    val mfaChallenge = authState as? AuthState.MfaRequired
     var isSignUp by rememberSaveable { mutableStateOf(false) }
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
     var passwordVisible by rememberSaveable { mutableStateOf(false) }
     var isLoading by rememberSaveable { mutableStateOf(false) }
+    var mfaCode by rememberSaveable(mfaChallenge?.userId) { mutableStateOf("") }
+    var pendingConfirmationEmail by rememberSaveable { mutableStateOf<String?>(null) }
+    var confirmationMessage by rememberSaveable(pendingConfirmationEmail) { mutableStateOf<String?>(null) }
+    var confirmationError by rememberSaveable(pendingConfirmationEmail) { mutableStateOf(false) }
     var emailFieldBounds by remember { mutableStateOf<Rect?>(null) }
     var passwordFieldBounds by remember { mutableStateOf<Rect?>(null) }
     var showServerSheet by rememberSaveable { mutableStateOf(false) }
     var showOfficialServerDialog by rememberSaveable { mutableStateOf(false) }
+    val confirmationSentText = stringResource(Res.string.auth_signup_resent)
 
     fun submitAuth() {
         if (email.isBlank() || password.length < 6 || isLoading) return
@@ -209,8 +229,57 @@ fun AuthScreen(
         isLoading = true
         focusManager.clearFocus(force = true)
         scope.launch {
-            if (isSignUp) AuthRepository.signUpWithEmail(email, password)
-            else AuthRepository.signInWithEmail(email, password)
+            if (isSignUp) {
+                AuthRepository.signUpWithEmail(email, password).onSuccess { outcome ->
+                    if (outcome is SignUpOutcome.EmailConfirmationRequired) {
+                        pendingConfirmationEmail = outcome.email
+                        password = ""
+                    }
+                }
+            } else {
+                AuthRepository.signInWithEmail(email, password)
+            }
+            isLoading = false
+        }
+    }
+
+    fun submitMfaCode() {
+        val digits = mfaCode.filter(Char::isDigit)
+        if (digits.length != 6 || isLoading) return
+        isLoading = true
+        focusManager.clearFocus(force = true)
+        scope.launch {
+            AuthRepository.verifyTotpLogin(digits)
+            isLoading = false
+        }
+    }
+
+    fun cancelMfaChallenge() {
+        if (isLoading) return
+        isLoading = true
+        scope.launch {
+            AuthRepository.signOut()
+            mfaCode = ""
+            isLoading = false
+        }
+    }
+
+    fun resendSignupConfirmation() {
+        val targetEmail = pendingConfirmationEmail ?: return
+        if (isLoading) return
+        isLoading = true
+        confirmationMessage = null
+        confirmationError = false
+        scope.launch {
+            AuthRepository.resendConfirmationEmail(targetEmail)
+                .onSuccess {
+                    confirmationMessage = confirmationSentText
+                    confirmationError = false
+                }
+                .onFailure { error ->
+                    confirmationMessage = error.message
+                    confirmationError = true
+                }
             isLoading = false
         }
     }
@@ -286,6 +355,11 @@ fun AuthScreen(
                         passwordVisible = passwordVisible,
                         isLoading = isLoading,
                         authError = authError,
+                        mfaChallenge = mfaChallenge,
+                        mfaCode = mfaCode,
+                        pendingConfirmationEmail = pendingConfirmationEmail,
+                        confirmationMessage = confirmationMessage,
+                        confirmationError = confirmationError,
                         deviceLinkAuthState = deviceLinkAuthState,
                         deviceLinkEnabled = serverConnectionState.activeServer.capabilities.tvLogin,
                         formPaneWidth = if (compactLargeScreen) 460.dp else formPaneWidth,
@@ -311,6 +385,18 @@ fun AuthScreen(
                         },
                         onStartDeviceLink = ::startDeviceLink,
                         onCancelDeviceLink = DeviceLinkAuthRepository::cancel,
+                        onMfaCodeChange = { next ->
+                            mfaCode = next.filter(Char::isDigit).take(6)
+                            AuthRepository.clearError()
+                        },
+                        onSubmitMfa = ::submitMfaCode,
+                        onCancelMfa = ::cancelMfaChallenge,
+                        onResendConfirmation = ::resendSignupConfirmation,
+                        onBackFromConfirmation = {
+                            pendingConfirmationEmail = null
+                            isSignUp = false
+                            AuthRepository.clearError()
+                        },
                         onEmailBoundsChange = { emailFieldBounds = it },
                         onPasswordBoundsChange = { passwordFieldBounds = it },
                     )
@@ -322,6 +408,11 @@ fun AuthScreen(
                         passwordVisible = passwordVisible,
                         isLoading = isLoading,
                         authError = authError,
+                        mfaChallenge = mfaChallenge,
+                        mfaCode = mfaCode,
+                        pendingConfirmationEmail = pendingConfirmationEmail,
+                        confirmationMessage = confirmationMessage,
+                        confirmationError = confirmationError,
                         deviceLinkAuthState = deviceLinkAuthState,
                         deviceLinkEnabled = serverConnectionState.activeServer.capabilities.tvLogin,
                         statusBarTop = statusBarTop,
@@ -343,6 +434,18 @@ fun AuthScreen(
                         },
                         onStartDeviceLink = ::startDeviceLink,
                         onCancelDeviceLink = DeviceLinkAuthRepository::cancel,
+                        onMfaCodeChange = { next ->
+                            mfaCode = next.filter(Char::isDigit).take(6)
+                            AuthRepository.clearError()
+                        },
+                        onSubmitMfa = ::submitMfaCode,
+                        onCancelMfa = ::cancelMfaChallenge,
+                        onResendConfirmation = ::resendSignupConfirmation,
+                        onBackFromConfirmation = {
+                            pendingConfirmationEmail = null
+                            isSignUp = false
+                            AuthRepository.clearError()
+                        },
                         onEmailBoundsChange = { emailFieldBounds = it },
                         onPasswordBoundsChange = { passwordFieldBounds = it },
                     )
@@ -419,6 +522,11 @@ private fun AuthMobileLayout(
     passwordVisible: Boolean,
     isLoading: Boolean,
     authError: String?,
+    mfaChallenge: AuthState.MfaRequired?,
+    mfaCode: String,
+    pendingConfirmationEmail: String?,
+    confirmationMessage: String?,
+    confirmationError: Boolean,
     deviceLinkAuthState: DeviceLinkAuthState,
     deviceLinkEnabled: Boolean,
     statusBarTop: Dp,
@@ -430,6 +538,11 @@ private fun AuthMobileLayout(
     onContinueWithoutAccount: () -> Unit,
     onStartDeviceLink: () -> Unit,
     onCancelDeviceLink: () -> Unit,
+    onMfaCodeChange: (String) -> Unit,
+    onSubmitMfa: () -> Unit,
+    onCancelMfa: () -> Unit,
+    onResendConfirmation: () -> Unit,
+    onBackFromConfirmation: () -> Unit,
     onEmailBoundsChange: (Rect) -> Unit,
     onPasswordBoundsChange: (Rect) -> Unit,
 ) {
@@ -455,45 +568,76 @@ private fun AuthMobileLayout(
 
             Spacer(modifier = Modifier.height(64.dp))
 
-            AuthHeading(
-                isSignUp = isSignUp,
-                headingStyle = MaterialTheme.typography.headlineLarge.copy(
-                    color = AuthTextPrimary,
-                    fontSize = 28.sp,
-                    lineHeight = 31.sp,
-                    fontWeight = FontWeight.SemiBold,
-                ),
-                subtitleStyle = MaterialTheme.typography.bodyLarge.copy(
-                    color = AuthTextSecondary,
-                    fontSize = 15.sp,
-                    lineHeight = 21.sp,
-                    fontWeight = FontWeight.Normal,
-                ),
-            )
+            when {
+                mfaChallenge != null -> {
+                    AuthMfaChallengePane(
+                        email = mfaChallenge.email,
+                        code = mfaCode,
+                        isLoading = isLoading,
+                        authError = authError,
+                        metrics = MobileAuthFormMetrics,
+                        scale = 1f,
+                        onCodeChange = onMfaCodeChange,
+                        onSubmit = onSubmitMfa,
+                        onSignOut = onCancelMfa,
+                    )
+                }
 
-            Spacer(modifier = Modifier.height(28.dp))
+                pendingConfirmationEmail != null -> {
+                    AuthEmailConfirmationPane(
+                        email = pendingConfirmationEmail,
+                        isLoading = isLoading,
+                        feedbackMessage = confirmationMessage,
+                        feedbackIsError = confirmationError,
+                        metrics = MobileAuthFormMetrics,
+                        scale = 1f,
+                        onResend = onResendConfirmation,
+                        onBackToSignIn = onBackFromConfirmation,
+                    )
+                }
 
-            AuthForm(
-                isSignUp = isSignUp,
-                email = email,
-                password = password,
-                passwordVisible = passwordVisible,
-                isLoading = isLoading,
-                authError = authError,
-                deviceLinkAuthState = deviceLinkAuthState,
-                deviceLinkEnabled = deviceLinkEnabled,
-                metrics = MobileAuthFormMetrics,
-                onEmailChange = onEmailChange,
-                onPasswordChange = onPasswordChange,
-                onPasswordVisibilityToggle = onPasswordVisibilityToggle,
-                onSubmit = onSubmit,
-                onToggleAuthMode = onToggleAuthMode,
-                onContinueWithoutAccount = onContinueWithoutAccount,
-                onStartDeviceLink = onStartDeviceLink,
-                onCancelDeviceLink = onCancelDeviceLink,
-                onEmailBoundsChange = onEmailBoundsChange,
-                onPasswordBoundsChange = onPasswordBoundsChange,
-            )
+                else -> {
+                    AuthHeading(
+                        isSignUp = isSignUp,
+                        headingStyle = MaterialTheme.typography.headlineLarge.copy(
+                            color = AuthTextPrimary,
+                            fontSize = 28.sp,
+                            lineHeight = 31.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        subtitleStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = AuthTextSecondary,
+                            fontSize = 15.sp,
+                            lineHeight = 21.sp,
+                            fontWeight = FontWeight.Normal,
+                        ),
+                    )
+
+                    Spacer(modifier = Modifier.height(28.dp))
+
+                    AuthForm(
+                        isSignUp = isSignUp,
+                        email = email,
+                        password = password,
+                        passwordVisible = passwordVisible,
+                        isLoading = isLoading,
+                        authError = authError,
+                        deviceLinkAuthState = deviceLinkAuthState,
+                        deviceLinkEnabled = deviceLinkEnabled,
+                        metrics = MobileAuthFormMetrics,
+                        onEmailChange = onEmailChange,
+                        onPasswordChange = onPasswordChange,
+                        onPasswordVisibilityToggle = onPasswordVisibilityToggle,
+                        onSubmit = onSubmit,
+                        onToggleAuthMode = onToggleAuthMode,
+                        onContinueWithoutAccount = onContinueWithoutAccount,
+                        onStartDeviceLink = onStartDeviceLink,
+                        onCancelDeviceLink = onCancelDeviceLink,
+                        onEmailBoundsChange = onEmailBoundsChange,
+                        onPasswordBoundsChange = onPasswordBoundsChange,
+                    )
+                }
+            }
         }
     }
 }
@@ -507,6 +651,11 @@ private fun AuthLargeLayout(
     passwordVisible: Boolean,
     isLoading: Boolean,
     authError: String?,
+    mfaChallenge: AuthState.MfaRequired?,
+    mfaCode: String,
+    pendingConfirmationEmail: String?,
+    confirmationMessage: String?,
+    confirmationError: Boolean,
     deviceLinkAuthState: DeviceLinkAuthState,
     deviceLinkEnabled: Boolean,
     formPaneWidth: Dp,
@@ -522,6 +671,11 @@ private fun AuthLargeLayout(
     onContinueWithoutAccount: () -> Unit,
     onStartDeviceLink: () -> Unit,
     onCancelDeviceLink: () -> Unit,
+    onMfaCodeChange: (String) -> Unit,
+    onSubmitMfa: () -> Unit,
+    onCancelMfa: () -> Unit,
+    onResendConfirmation: () -> Unit,
+    onBackFromConfirmation: () -> Unit,
     onEmailBoundsChange: (Rect) -> Unit,
     onPasswordBoundsChange: (Rect) -> Unit,
 ) {
@@ -584,48 +738,226 @@ private fun AuthLargeLayout(
                     .fillMaxWidth()
                     .padding(horizontal = formHorizontalPadding),
             ) {
-                AuthHeading(
-                    isSignUp = isSignUp,
-                    headingStyle = MaterialTheme.typography.headlineLarge.copy(
-                        color = AuthTextPrimary,
-                        fontSize = (30f * scale).sp,
-                        lineHeight = (33f * scale).sp,
-                        fontWeight = FontWeight.SemiBold,
-                    ),
-                    subtitleStyle = MaterialTheme.typography.bodyLarge.copy(
-                        color = AuthTextSecondary,
-                        fontSize = (15f * scale).sp,
-                        lineHeight = (21f * scale).sp,
-                        fontWeight = FontWeight.Normal,
-                    ),
-                )
+                when {
+                    mfaChallenge != null -> {
+                        AuthMfaChallengePane(
+                            email = mfaChallenge.email,
+                            code = mfaCode,
+                            isLoading = isLoading,
+                            authError = authError,
+                            metrics = formMetrics,
+                            scale = scale,
+                            onCodeChange = onMfaCodeChange,
+                            onSubmit = onSubmitMfa,
+                            onSignOut = onCancelMfa,
+                        )
+                    }
 
-                Spacer(modifier = Modifier.height(32.dp * scale))
+                    pendingConfirmationEmail != null -> {
+                        AuthEmailConfirmationPane(
+                            email = pendingConfirmationEmail,
+                            isLoading = isLoading,
+                            feedbackMessage = confirmationMessage,
+                            feedbackIsError = confirmationError,
+                            metrics = formMetrics,
+                            scale = scale,
+                            onResend = onResendConfirmation,
+                            onBackToSignIn = onBackFromConfirmation,
+                        )
+                    }
 
-                AuthForm(
-                    isSignUp = isSignUp,
-                    email = email,
-                    password = password,
-                    passwordVisible = passwordVisible,
-                    isLoading = isLoading,
-                    authError = authError,
-                    deviceLinkAuthState = deviceLinkAuthState,
-                    deviceLinkEnabled = deviceLinkEnabled,
-                    metrics = formMetrics,
-                    scale = scale,
-                    onEmailChange = onEmailChange,
-                    onPasswordChange = onPasswordChange,
-                    onPasswordVisibilityToggle = onPasswordVisibilityToggle,
-                    onSubmit = onSubmit,
-                    onToggleAuthMode = onToggleAuthMode,
-                    onContinueWithoutAccount = onContinueWithoutAccount,
-                    onStartDeviceLink = onStartDeviceLink,
-                    onCancelDeviceLink = onCancelDeviceLink,
-                    onEmailBoundsChange = onEmailBoundsChange,
-                    onPasswordBoundsChange = onPasswordBoundsChange,
-                )
+                    else -> {
+                        AuthHeading(
+                            isSignUp = isSignUp,
+                            headingStyle = MaterialTheme.typography.headlineLarge.copy(
+                                color = AuthTextPrimary,
+                                fontSize = (30f * scale).sp,
+                                lineHeight = (33f * scale).sp,
+                                fontWeight = FontWeight.SemiBold,
+                            ),
+                            subtitleStyle = MaterialTheme.typography.bodyLarge.copy(
+                                color = AuthTextSecondary,
+                                fontSize = (15f * scale).sp,
+                                lineHeight = (21f * scale).sp,
+                                fontWeight = FontWeight.Normal,
+                            ),
+                        )
+
+                        Spacer(modifier = Modifier.height(32.dp * scale))
+
+                        AuthForm(
+                            isSignUp = isSignUp,
+                            email = email,
+                            password = password,
+                            passwordVisible = passwordVisible,
+                            isLoading = isLoading,
+                            authError = authError,
+                            deviceLinkAuthState = deviceLinkAuthState,
+                            deviceLinkEnabled = deviceLinkEnabled,
+                            metrics = formMetrics,
+                            scale = scale,
+                            onEmailChange = onEmailChange,
+                            onPasswordChange = onPasswordChange,
+                            onPasswordVisibilityToggle = onPasswordVisibilityToggle,
+                            onSubmit = onSubmit,
+                            onToggleAuthMode = onToggleAuthMode,
+                            onContinueWithoutAccount = onContinueWithoutAccount,
+                            onStartDeviceLink = onStartDeviceLink,
+                            onCancelDeviceLink = onCancelDeviceLink,
+                            onEmailBoundsChange = onEmailBoundsChange,
+                            onPasswordBoundsChange = onPasswordBoundsChange,
+                        )
+                    }
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun AuthMfaChallengePane(
+    email: String?,
+    code: String,
+    isLoading: Boolean,
+    authError: String?,
+    metrics: AuthFormMetrics,
+    scale: Float,
+    onCodeChange: (String) -> Unit,
+    onSubmit: () -> Unit,
+    onSignOut: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = stringResource(Res.string.auth_mfa_title),
+            style = MaterialTheme.typography.headlineLarge.copy(
+                color = AuthTextPrimary,
+                fontSize = (28f * scale).sp,
+                lineHeight = (31f * scale).sp,
+                fontWeight = FontWeight.SemiBold,
+            ),
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = if (!email.isNullOrBlank()) {
+                stringResource(Res.string.auth_mfa_subtitle_email, email)
+            } else {
+                stringResource(Res.string.auth_mfa_subtitle)
+            },
+            style = MaterialTheme.typography.bodyLarge.copy(
+                color = AuthTextSecondary,
+                fontSize = (15f * scale).sp,
+                lineHeight = (21f * scale).sp,
+            ),
+        )
+        Spacer(modifier = Modifier.height(28.dp * scale))
+        AuthTextField(
+            value = code,
+            onValueChange = onCodeChange,
+            placeholder = stringResource(Res.string.auth_mfa_code_placeholder),
+            icon = Icons.Rounded.Lock,
+            metrics = metrics,
+            scale = scale,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Number,
+                imeAction = ImeAction.Done,
+            ),
+            keyboardActions = KeyboardActions(
+                onDone = { onSubmit() },
+            ),
+        )
+        authError?.let { errorText ->
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = errorText,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = (13f * scale).sp,
+                    lineHeight = (18f * scale).sp,
+                ),
+            )
+        }
+        Spacer(modifier = Modifier.height(metrics.primaryTop))
+        AuthPrimaryButton(
+            text = stringResource(Res.string.auth_mfa_verify),
+            isLoading = isLoading,
+            enabled = !isLoading && code.length == 6,
+            height = metrics.primaryHeight,
+            scale = scale,
+            onClick = onSubmit,
+        )
+        Spacer(modifier = Modifier.height(14.dp * scale))
+        AuthSecondaryButton(
+            text = stringResource(Res.string.auth_mfa_switch_account),
+            enabled = !isLoading,
+            height = metrics.secondaryHeight,
+            scale = scale,
+            onClick = onSignOut,
+        )
+    }
+}
+
+@Composable
+private fun AuthEmailConfirmationPane(
+    email: String,
+    isLoading: Boolean,
+    feedbackMessage: String?,
+    feedbackIsError: Boolean,
+    metrics: AuthFormMetrics,
+    scale: Float,
+    onResend: () -> Unit,
+    onBackToSignIn: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = stringResource(Res.string.auth_signup_confirm_title),
+            style = MaterialTheme.typography.headlineLarge.copy(
+                color = AuthTextPrimary,
+                fontSize = (28f * scale).sp,
+                lineHeight = (31f * scale).sp,
+                fontWeight = FontWeight.SemiBold,
+            ),
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = stringResource(Res.string.auth_signup_confirm_message, email),
+            style = MaterialTheme.typography.bodyLarge.copy(
+                color = AuthTextSecondary,
+                fontSize = (15f * scale).sp,
+                lineHeight = (21f * scale).sp,
+            ),
+        )
+        feedbackMessage?.let { message ->
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    color = if (feedbackIsError) MaterialTheme.colorScheme.error else AuthTextPrimary,
+                    fontSize = (13f * scale).sp,
+                    lineHeight = (18f * scale).sp,
+                ),
+            )
+        }
+        Spacer(modifier = Modifier.height(metrics.primaryTop))
+        AuthPrimaryButton(
+            text = stringResource(Res.string.auth_signup_resend),
+            isLoading = isLoading,
+            enabled = !isLoading,
+            height = metrics.primaryHeight,
+            scale = scale,
+            onClick = onResend,
+        )
+        Spacer(modifier = Modifier.height(14.dp * scale))
+        AuthSecondaryButton(
+            text = stringResource(Res.string.auth_signup_back_to_sign_in),
+            enabled = !isLoading,
+            height = metrics.secondaryHeight,
+            scale = scale,
+            onClick = onBackToSignIn,
+        )
     }
 }
 

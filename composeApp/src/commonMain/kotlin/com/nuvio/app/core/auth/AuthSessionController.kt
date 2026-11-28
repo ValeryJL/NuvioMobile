@@ -55,6 +55,7 @@ internal interface AuthSessionGateway {
     suspend fun loadFromStorage(): Boolean
     suspend fun retrieveUserForCurrentSession()
     suspend fun refreshCurrentSession()
+    suspend fun requiresMfaVerification(): Boolean = false
     suspend fun signOut()
     suspend fun clearSession()
 }
@@ -123,6 +124,15 @@ internal class AuthSessionController(
             is AuthGatewayStatus.Authenticated -> {
                 cancelPendingLostSessionReset()
                 if (!validateRemoteSession(gateway, status.userId)) return
+
+                if (gateway.requiresMfaVerification()) {
+                    _error.value = null
+                    _state.value = AuthState.MfaRequired(
+                        userId = status.userId,
+                        email = status.email,
+                    )
+                    return
+                }
 
                 val previousUserId = store.loadString(KEY_LAST_ACCOUNT_USER_ID)
                 if (
@@ -435,6 +445,14 @@ internal class AuthSessionController(
 
     fun setError(message: String?) {
         _error.value = message
+    }
+
+    suspend fun refreshMfaState() {
+        val gateway = gatewayProvider()
+        val status = gateway.currentStatus()
+        if (status is AuthGatewayStatus.Authenticated) {
+            handleGatewayStatus(gateway, status)
+        }
     }
 
     fun clearError() {

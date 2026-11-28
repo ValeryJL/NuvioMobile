@@ -305,7 +305,8 @@ internal fun AppGate(
         val cachedProfiles = profileState.profiles
         val hasCachedProfileAccess =
             cachedProfiles.isNotEmpty() &&
-                authState !is AuthState.Authenticated
+                authState !is AuthState.Authenticated &&
+                authState !is AuthState.MfaRequired
         val allowCachedProfileAccess =
             hasCachedProfileAccess &&
                 (
@@ -321,8 +322,9 @@ internal fun AppGate(
                     gateScreen = AppGateScreen.Loading.name
                 }
             }
-            is AuthState.Unauthenticated -> {
-                if (allowCachedProfileAccess) {
+            is AuthState.Unauthenticated,
+            is AuthState.MfaRequired -> {
+                if (authState is AuthState.Unauthenticated && allowCachedProfileAccess) {
                     enterProfileGate(cachedProfiles, syncOnEnter = false)
                 } else {
                     ProfileRepository.clearInMemory()

@@ -258,6 +258,39 @@ class AuthSessionControllerTest {
         assertTrue(IllegalStateException("token is expired by 5m").isJwtExpiredError())
         assertTrue(IllegalStateException("Token has expired").isJwtExpiredError())
     }
+
+    @Test
+    fun mfaRequiredBlocksAuthenticatedTransitionUntilVerified() = runTest {
+        val store = FakeAuthStore()
+        val gateway = FakeAuthGateway(AuthGatewayStatus.Authenticated("user-1", "a@example.com")).apply {
+            mfaVerificationRequired = true
+        }
+        val controller = AuthSessionController(
+            scope = backgroundScope,
+            store = store,
+            gatewayProvider = { gateway },
+            wipeLocalData = {},
+            clearInMemoryProfiles = {},
+            signedOutNotice = { "Signed out" },
+            signOutFailedFallback = { "Sign out failed" },
+        )
+
+        controller.initialize()
+        runCurrent()
+
+        val pendingState = assertIs<AuthState.MfaRequired>(controller.state.value)
+        assertEquals("user-1", pendingState.userId)
+        assertEquals("a@example.com", pendingState.email)
+        assertEquals(false, store.loadFlag(KEY_HAD_ACCOUNT_SESSION))
+
+        gateway.mfaVerificationRequired = false
+        controller.refreshMfaState()
+        runCurrent()
+
+        val activeState = assertIs<AuthState.Authenticated>(controller.state.value)
+        assertEquals("user-1", activeState.userId)
+        assertTrue(store.loadFlag(KEY_HAD_ACCOUNT_SESSION))
+    }
 }
 
 private class FakeAuthStore : AuthKeyValueStore {
@@ -298,6 +331,7 @@ private class FakeAuthGateway(
     var hasSession: Boolean = false
     var retrieveUserError: Throwable? = null
     var refreshError: Throwable? = null
+    var mfaVerificationRequired: Boolean = false
     var refreshCalls: Int = 0
     var signOutCalls: Int = 0
 
@@ -310,6 +344,8 @@ private class FakeAuthGateway(
     override suspend fun retrieveUserForCurrentSession() {
         retrieveUserError?.let { throw it }
     }
+
+    override suspend fun requiresMfaVerification(): Boolean = mfaVerificationRequired
 
     override suspend fun refreshCurrentSession() {
         refreshCalls += 1

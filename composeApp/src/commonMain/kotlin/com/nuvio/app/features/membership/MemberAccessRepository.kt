@@ -72,7 +72,8 @@ object MemberAccessRepository {
     private suspend fun loadAccess(auth: AuthState) {
         when (auth) {
             AuthState.Loading -> return
-            AuthState.Unauthenticated -> {
+            AuthState.Unauthenticated,
+            is AuthState.MfaRequired -> {
                 _access.value = MemberAccess.None
                 return
             }
